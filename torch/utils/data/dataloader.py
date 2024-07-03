@@ -44,6 +44,8 @@ __all__ = [
 ]
 
 
+T_co = TypeVar('T_co', covariant=True)
+T = TypeVar('T')
 _T = TypeVar("_T")
 _T_co = TypeVar("_T_co", covariant=True)
 _worker_init_fn_t = Callable[[int], None]

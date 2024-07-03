@@ -37,7 +37,7 @@ from torch.fx.experimental.symbolic_shapes import free_unbacked_symbols
 from torch.utils._sympy.symbol import free_symbol_is_type, SymT
 from torch.utils._triton import has_triton
 
-from . import comms, config, dependencies, ir, metrics
+from . import comms, config, dependencies, ir, metrics, spmd_prefetch, spmd_bucketing
 from .codecache import write_text
 from .codegen.common import BackendFeature, get_scheduling_for_device, Kernel
 from .comm_analysis import estimate_nccl_collective_runtime
@@ -1478,6 +1478,14 @@ class Scheduler:
         self.topological_sort_schedule()
         self.logged_slow_fusion: Set[Tuple[str, str]] = set()
         self.fuse_nodes()
+        print("DO fusion in pytorch intern 24")
+        # do prefetching reordering
+        if self.post_grad_graph_id == 0:
+            self.nodes = spmd_prefetch.reorder_forward_heuristic(self.nodes, all_gather_order="after")
+        elif self.post_grad_graph_id == 1:
+            self.nodes = spmd_prefetch.reorder_forward_heuristic(self.nodes, all_gather_order="after")
+            self.nodes = spmd_prefetch.reorder_backward_heuristic(self.nodes)
+
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:
             self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)
