@@ -1477,14 +1477,14 @@ class Scheduler:
         self.create_foreach_nodes()
         self.topological_sort_schedule()
         self.logged_slow_fusion: Set[Tuple[str, str]] = set()
+        self.nodes = spmd_bucketing.bucketing_per_blcok(self.nodes)
         self.fuse_nodes()
-        print("DO fusion in pytorch intern 24")
         # do prefetching reordering
         if self.post_grad_graph_id == 0:
-            self.nodes = spmd_prefetch.reorder_forward_heuristic(self.nodes, all_gather_order="after")
+            self.nodes = spmd_prefetch.reorder_all_gather(self.nodes, all_gather_order="before")
         elif self.post_grad_graph_id == 1:
-            self.nodes = spmd_prefetch.reorder_forward_heuristic(self.nodes, all_gather_order="after")
-            self.nodes = spmd_prefetch.reorder_backward_heuristic(self.nodes)
+            self.nodes = spmd_prefetch.reorder_all_gather(self.nodes, all_gather_order="after")
+            self.nodes = spmd_prefetch.reorder_reduce_scatter(self.nodes)
 
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:
