@@ -1477,7 +1477,6 @@ class Scheduler:
         self.create_foreach_nodes()
         self.topological_sort_schedule()
         self.logged_slow_fusion: Set[Tuple[str, str]] = set()
-        #self.nodes = simple_fsdp.bucketing_per_blcok(self.nodes)
         self.fuse_nodes()
         # do prefetching reordering
         if self.post_grad_graph_id == 0:
