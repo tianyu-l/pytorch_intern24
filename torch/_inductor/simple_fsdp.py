@@ -1,13 +1,10 @@
 # mypy: allow-untyped-defs
 # pyre-strict
-from typing import (
-    Dict,
-    List,
-    Optional,
-)
 from enum import IntEnum
-from . import ir, comms, scheduler
+from typing import Dict, List, Optional
 
+import torch
+from . import comms, ir, scheduler
 
 
 class NodeType(IntEnum):
@@ -22,11 +19,11 @@ def reorder_all_gather(
     snodes: List["scheduler.BaseSchedulerNode"],
     all_gather_before_last_wait: Optional[bool] = True,
 ) -> List["scheduler.BaseSchedulerNode"]:
-    '''
+    """
     Reorder All Gather and Wait in the forward/backward pass;
     1. all_gather_before_last_wait set to True: all_gather_i is reordered before wait_i-1
     2. all_gather_before_last_wait set to False: all_gather_i is reordered after wait_i-1
-    '''
+    """
     result_list: List[scheduler.BaseSchedulerNode] = []
     all_gather_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
@@ -50,13 +47,21 @@ def reorder_all_gather(
             if len(inverse_user) > 0:
                 all_gather_list.extend(inverse_user)
         elif node_type == NodeType.WAIT:
-            if node_to_type[snodes[idx+1]]==NodeType.ALL_GATHER and not all_gather_before_last_wait and len(all_gather_list) > 0:
+            if (
+                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+                and not all_gather_before_last_wait
+                and len(all_gather_list) > 0
+            ):
                 # move i-th all gather node and its dependencies after (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
             # add wait node
             result_list.append(node)
-            if node_to_type[snodes[idx+1]]==NodeType.ALL_GATHER and all_gather_before_last_wait and len(all_gather_list) > 0:
+            if (
+                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+                and all_gather_before_last_wait
+                and len(all_gather_list) > 0
+            ):
                 # move i-th all gather node and its dependencies before (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
@@ -69,12 +74,12 @@ def reorder_all_gather(
 
 
 def reorder_reduce_scatter(
-    snodes: List["scheduler.BaseSchedulerNode"]
+    snodes: List["scheduler.BaseSchedulerNode"],
 ) -> List["scheduler.BaseSchedulerNode"]:
-    '''
+    """
     Reorder Reduce Scatter and Wait in the backward pass
     reorder wait_i_rs before reduce_scatter_i+1
-    '''
+    """
     result_list: List[scheduler.BaseSchedulerNode] = []
     wait_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
@@ -92,7 +97,7 @@ def reorder_reduce_scatter(
             # we do not reorder all gather and compute node
             result_list.append(node)
         elif node_type == NodeType.WAIT:
-            if node_to_type[snodes[idx-1]] == NodeType.REDUCE_SCATTER:
+            if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER:
                 # gather wait node after reduce scatter
                 wait_list.append(node)
             else:
@@ -120,13 +125,24 @@ def get_node_type(node, prev_nodes=None) -> int:
     # node_type: {0: all gather; 1: wait_tensor; 2: computation; 3: reduce scatter; 4: convert_element_type after rs}
     node_type = NodeType.COMPUTE
     if not isinstance(node, scheduler.FusedSchedulerNode):
-        if isinstance(node.node, ir._CollectiveKernel) and "all_gather_into_tensor" in node.node.op_overload.name():
+        if (
+            isinstance(node.node, ir._CollectiveKernel)
+            and node.node.op_overload
+            == torch.ops._c10d_functional.all_gather_into_tensor.default
+        ):
             node_type = NodeType.ALL_GATHER
         if isinstance(node.node, ir._WaitKernel):
             node_type = NodeType.WAIT
-        if isinstance(node.node, ir._CollectiveKernel) and "reduce_scatter_tensor" in node.node.op_overload.name():
+        if (
+            isinstance(node.node, ir._CollectiveKernel)
+            and node.node.op_overload
+            == torch.ops._c10d_functional.reduce_scatter_tensor.default
+        ):
             node_type = NodeType.REDUCE_SCATTER
         # TODO(ruisizhang123): we add [4: convert_element_type] bc of some bugs in mpt conversion. after tianyu fixed this, we can remove it
-        if isinstance(node.node, ir.ComputedBuffer) and prev_nodes == [NodeType.REDUCE_SCATTER, NodeType.WAIT]:
+        if isinstance(node.node, ir.ComputedBuffer) and prev_nodes == [
+            NodeType.REDUCE_SCATTER,
+            NodeType.WAIT,
+        ]:
             node_type = NodeType.CONVERT_ELEMENT_TYPE
     return node_type
