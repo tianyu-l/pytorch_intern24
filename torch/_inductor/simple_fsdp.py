@@ -12,7 +12,6 @@ class NodeType(IntEnum):
     WAIT = 1
     COMPUTE = 2
     REDUCE_SCATTER = 3
-    CONVERT_ELEMENT_TYPE = 4
 
 
 def reorder_all_gather(
@@ -83,29 +82,25 @@ def reorder_reduce_scatter(
     result_list: List[scheduler.BaseSchedulerNode] = []
     wait_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
-
+    inverse_users, node_users = comms.compute_node_users(snodes)
     prev_node_type: List[int] = []
     for node in snodes:
-        # TODO(ruisizhang123): to get the convert_element_type after rs, can be removed after fixing the mpt bug.
-        cur_node_type = get_node_type(node, prev_node_type[-2:])
-        node_to_type[node] = cur_node_type
-        prev_node_type.append(cur_node_type)
+        node_to_type[node] = get_node_type(node)
 
     for idx, node in enumerate(snodes):
         node_type = node_to_type[node]
         if node_type in [NodeType.ALL_GATHER, NodeType.COMPUTE]:
             # we do not reorder all gather and compute node
-            result_list.append(node)
+            if node not in result_list and node not in wait_list:
+                result_list.append(node)
         elif node_type == NodeType.WAIT:
             if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER:
                 # gather wait node after reduce scatter
                 wait_list.append(node)
+                wait_list.extend(node_users[node])
             else:
                 # we do not reorder wait node after all gather
                 result_list.append(node)
-        elif node_type == NodeType.CONVERT_ELEMENT_TYPE:
-            # TODO(ruisizhang123): gather reduce scatter wait's follow-up covert element, can be removed after fixing the mpt bug.
-            wait_list.append(node)
         elif node_type == NodeType.REDUCE_SCATTER:
             if len(wait_list) > 0:
                 # move the i-th wait node before (i+1)-th reduce scatter node
@@ -122,7 +117,7 @@ def reorder_reduce_scatter(
 
 
 def get_node_type(node, prev_nodes=None) -> int:
-    # node_type: {0: all gather; 1: wait_tensor; 2: computation; 3: reduce scatter; 4: convert_element_type after rs}
+    # node_type: {0: all gather; 1: wait_tensor; 2: computation; 3: reduce scatter;}
     node_type = NodeType.COMPUTE
     if not isinstance(node, scheduler.FusedSchedulerNode):
         if (
@@ -139,10 +134,4 @@ def get_node_type(node, prev_nodes=None) -> int:
             == torch.ops._c10d_functional.reduce_scatter_tensor.default
         ):
             node_type = NodeType.REDUCE_SCATTER
-        # TODO(ruisizhang123): we add [4: convert_element_type] bc of some bugs in mpt conversion. after tianyu fixed this, we can remove it
-        if isinstance(node.node, ir.ComputedBuffer) and prev_nodes == [
-            NodeType.REDUCE_SCATTER,
-            NodeType.WAIT,
-        ]:
-            node_type = NodeType.CONVERT_ELEMENT_TYPE
     return node_type
