@@ -64,8 +64,7 @@ def reorder_all_gather(
                 # move i-th all gather node and its dependencies before (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
-        else:
-            raise ValueError("node type not supported")
+
     if len(all_gather_list) > 0:
         result_list.extend(all_gather_list)
     result_list.reverse()
@@ -109,8 +108,6 @@ def reorder_reduce_scatter(
                 wait_list = []
             # add reduce scatter node
             result_list.append(node)
-        else:
-            raise ValueError("node type not supported")
 
     if len(wait_list) > 0:
         result_list.extend(wait_list)
