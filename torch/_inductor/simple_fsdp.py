@@ -117,7 +117,7 @@ def reorder_reduce_scatter(
     return result_list
 
 
-def get_node_type(node, prev_nodes=None) -> int:
+def get_node_type(node) -> int:
     if isinstance(node, scheduler.FusedSchedulerNode):
         return NodeType.COMPUTE
 
@@ -134,7 +134,5 @@ def get_node_type(node, prev_nodes=None) -> int:
             == torch.ops._c10d_functional.reduce_scatter_tensor.default
         ):
             return NodeType.REDUCE_SCATTER
-        else:
-            return NodeType.COMPUTE
-    else:
-        return NodeType.COMPUTE
+
+    return NodeType.COMPUTE
