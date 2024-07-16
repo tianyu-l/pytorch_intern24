@@ -82,8 +82,9 @@ def reorder_reduce_scatter(
     result_list: List[scheduler.BaseSchedulerNode] = []
     wait_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
+    
     inverse_users, node_users = comms.compute_node_users(snodes)
-    prev_node_type: List[int] = []
+    
     for node in snodes:
         node_to_type[node] = get_node_type(node)
 
@@ -91,7 +92,7 @@ def reorder_reduce_scatter(
         node_type = node_to_type[node]
         if node_type in [NodeType.ALL_GATHER, NodeType.COMPUTE]:
             # we do not reorder all gather and compute node
-            if node not in result_list and node not in wait_list:
+            if node not in wait_list:
                 result_list.append(node)
         elif node_type == NodeType.WAIT:
             if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER:
@@ -117,7 +118,6 @@ def reorder_reduce_scatter(
 
 
 def get_node_type(node, prev_nodes=None) -> int:
-    # node_type: {0: all gather; 1: wait_tensor; 2: computation; 3: reduce scatter;}
     node_type = NodeType.COMPUTE
     if not isinstance(node, scheduler.FusedSchedulerNode):
         if (
@@ -126,9 +126,9 @@ def get_node_type(node, prev_nodes=None) -> int:
             == torch.ops._c10d_functional.all_gather_into_tensor.default
         ):
             node_type = NodeType.ALL_GATHER
-        if isinstance(node.node, ir._WaitKernel):
+        elif isinstance(node.node, ir._WaitKernel):
             node_type = NodeType.WAIT
-        if (
+        elif (
             isinstance(node.node, ir._CollectiveKernel)
             and node.node.op_overload
             == torch.ops._c10d_functional.reduce_scatter_tensor.default
