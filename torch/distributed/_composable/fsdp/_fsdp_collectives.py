@@ -81,6 +81,7 @@ def all_gather_copy_in_cuda(
         0, all_gather_input_numel * rank, all_gather_input_numel
     )
     foreach_copy_dsts = torch.split(all_gather_input, inp_split_sizes)
+    all_gather_inputs = [t.flatten() for t in all_gather_inputs]
     with torch.no_grad():
         torch._foreach_copy_(foreach_copy_dsts, all_gather_inputs)
     return all_gather_input, all_gather_output
@@ -97,8 +98,8 @@ lib.define(
 def split_with_sizes_copy(
     all_gather_output: torch.Tensor,
     all_gather_input_split_sizes: List[int],
-    dim: int,
     out: List[torch.Tensor],
+    dim: int=0,
 ) -> None:
     torch.split_with_sizes_copy(
         all_gather_output, all_gather_input_split_sizes, dim=dim, out=out
@@ -221,6 +222,7 @@ def foreach_all_gather_copy_out(
         out = [t.view(world_size, -1).view(torch.uint8) for t in gen]
     else:
         out = [t.view(world_size, -1) for t in gen]
+    
     torch.ops.fsdp.split_with_sizes_copy(
         all_gather_output, all_gather_input_split_sizes, dim=1, out=out
     )

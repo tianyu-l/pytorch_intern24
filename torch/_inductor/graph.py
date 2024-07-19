@@ -1666,7 +1666,10 @@ class GraphLowering(torch.fx.Interpreter):
             num_bytes = node.get_read_write_buffers_sizes()
             total_bytes += num_bytes
             node_counts.append((node, num_bytes // 4))
-            node_runtimes.append((node, node.get_estimated_runtime()))
+            try:
+                node_runtimes.append((node, node.get_estimated_runtime()))
+            except:
+                node_runtimes.append((node, 0))
         return total_bytes, node_counts, node_runtimes
 
     @staticmethod

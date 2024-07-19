@@ -2594,6 +2594,7 @@ class TritonKernel(SIMDKernel):
             #     tree.numel
             # )
             # argdefs.append(f"{tree.prefix}numel: tl.constexpr")
+
         triton_meta["configs"] = [config_of(signature)]
 
         # Triton compiler includes equal_to_1 args into constants even

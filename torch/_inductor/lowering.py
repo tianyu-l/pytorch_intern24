@@ -6345,20 +6345,21 @@ try:
 
     @register_lowering(_c10d_functional.all_gather_into_tensor)
     def _all_gather_into_tensor(inp, group_size, group_name):
-        return ir.TensorBox.create(
-            ir._CollectiveKernel.create_out_of_place(
+        node = ir._CollectiveKernel.create_out_of_place(
                 _c10d_functional.all_gather_into_tensor.default,
                 inp,
                 group_size,
                 group_name,
-            )
+        )
+        return ir.TensorBox.create(
+            node
         )
 
     @register_lowering(_c10d_functional.all_gather_into_tensor_coalesced)
     def _all_gather_into_tensor_coalesced(inputs, group_size, group_name):
         return pytree.tree_map(
             ir.TensorBox.create,
-            ir._CollectiveKernel.create_out_of_place(
+            ir._CollectiveKernel.create_out_of_place_coalesced(
                 _c10d_functional.all_gather_into_tensor_coalesced.default,
                 inputs,
                 group_size,
