@@ -435,6 +435,25 @@ class ReuseLine(MemoryPlanningLine):
         code.writeline(
             self.wrapper.make_buffer_reuse(self.node, self.reused_as, self.delete_old)
         )
+@dataclasses.dataclass
+class ReuseLine_AG(MemoryPlanningLine):
+    node: ir.Buffer
+    reused_as: ir.Buffer
+    delete_old: bool = True
+
+    def plan(self, state: MemoryPlanningState) -> MemoryPlanningLine:
+        if self.node.get_name() in V.graph.removed_buffers:
+            assert self.reused_as.get_name() in V.graph.removed_buffers
+            return NullLine(self.wrapper)
+        assert self.reused_as.get_name() not in V.graph.removed_buffers
+        return self
+
+    def codegen(self, code: IndentedBuffer) -> None:
+        assert self.node.get_name() not in V.graph.removed_buffers
+        assert self.reused_as.get_name() not in V.graph.removed_buffers
+        code.writeline(
+            self.wrapper.make_buffer_reuse_ag(self.node, self.reused_as, self.delete_old)
+        )
 
 
 class NullLine(MemoryPlanningLine):
@@ -1733,6 +1752,9 @@ class WrapperCodeGen(CodeGen):
     def codegen_exact_buffer_reuse(self, old_name: str, new_name: str, del_line: str):
         return f"{self.declare_maybe_reference}{new_name} = {old_name}{del_line}{self.ending}  {self.comment} reuse"
 
+    def codegen_exact_buffer_reuse_ag(self, old_name: str, new_name: str, del_line: str):
+        return f"{self.declare_maybe_reference}{new_name} = {old_name}{self.ending}  {self.comment} reuse"
+
     def make_buffer_reuse(self, old: ir.Buffer, new: ir.Buffer, delete_old: bool):
         assert old.get_dtype() == new.get_dtype()
         old_name = old.get_name()
@@ -1752,6 +1774,28 @@ class WrapperCodeGen(CodeGen):
         if reinterpret_view in self.stack_allocated_buffers:
             self.stack_allocated_buffers[new_name] = new
         return f"{self.declare_maybe_reference}{new_name} = {reinterpret_view}{del_line}  {self.comment} reuse"
+
+    def make_buffer_reuse_ag(self, old: ir.Buffer, new: ir.Buffer, delete_old: bool):
+        assert old.get_dtype() == new.get_dtype()
+        old_name = old.get_name()
+        new_name = new.get_name()
+        del_line = ";"
+        if old_name not in V.graph.get_output_names() and delete_old:
+            del_line = f"; {self.make_buffer_free(old)}"
+
+        if old.get_size() == new.get_size() and old.get_stride() == new.get_stride():
+            if old_name in self.stack_allocated_buffers:
+                self.stack_allocated_buffers[new_name] = new
+            #print("self.codegen_exact_buffer_reuse_ag(old_name, new_name, del_line)", self.codegen_exact_buffer_reuse_ag(old_name, new_name, del_line))
+            return self.codegen_exact_buffer_reuse_ag(old_name, new_name, del_line)
+
+        reinterpret_view = self.codegen_reinterpret_view(
+            old, new.get_size(), new.get_stride(), 0, self.wrapper_call
+        )
+        if reinterpret_view in self.stack_allocated_buffers:
+            self.stack_allocated_buffers[new_name] = new
+        return f"{self.declare_maybe_reference}{new_name} = {reinterpret_view} {del_line} {self.comment} reuse"
+
 
     def codegen_deferred_allocation(self, name, layout):
         self.writeline(
@@ -1834,6 +1878,15 @@ class WrapperCodeGen(CodeGen):
         self.allocated.add(output_buffer.get_name())
         self.reuses[output_buffer.get_name()] = input_buffer.get_name()
         self.writeline(ReuseLine(self, input_buffer, output_buffer))
+
+ 
+    def codegen_inplace_reuse_ag(self, input_buffer: ir.Buffer, output_buffer: ir.Buffer):
+        assert buffer_reuse_key(input_buffer) == buffer_reuse_key(output_buffer)
+        self.codegen_allocation(input_buffer)
+        self.freed.add(input_buffer.get_name())
+        self.allocated.add(output_buffer.get_name())
+        self.reuses[output_buffer.get_name()] = input_buffer.get_name()
+        self.writeline(ReuseLine_AG(self, input_buffer, output_buffer))
 
     def codegen_unbacked_symbol_decl(self, symbol):
         name = str(symbol)

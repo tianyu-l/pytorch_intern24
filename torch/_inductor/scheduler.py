@@ -1551,21 +1551,12 @@ class Scheduler:
         self.create_foreach_nodes()
         self.nodes = self.topological_sort_schedule(self.nodes)
         self.logged_slow_fusion: Set[Tuple[str, str]] = set()
-        
-        self.buffer2node = {}
-        for n in self.nodes:
-            self.buffer2node[n.node.get_name()] = n
-        #for node in self.nodes:
-            #if node.node.get_name() == "buf1" or node.node.get_name() == "buf4":
-            #    print("before node", node, node.node)
-            #    print("before node.unmet_dependencies", node.unmet_dependencies)
-            #    print("before node.read_writes.reads", node.read_writes.reads)
-          #  if isinstance(node.node, ir._CollectiveKernel) and node.node.op_overload == torch.ops._c10d_functional.all_gather_into_tensor.default:
-          #      print("all gather node.node", node.node.get_name())
-       
+ 
+ 
         debug = False
-        self.nodes, depend_dict, all_gather_dict = simple_fsdp.bucketing_all_gather_per_blcok(self.nodes)
-        self.nodes = self.update_dependencies(self.nodes, depend_dict, all_gather_dict)
+        if self.post_grad_graph_id == 0:
+            self.nodes, depend_dict, all_gather_dict = simple_fsdp.bucketing_all_gather_per_blcok(self.nodes, self.post_grad_graph_id)
+            self.nodes = self.update_dependencies(self.nodes, depend_dict, all_gather_dict)
 
         self.nodes = self.fuse_nodes(self.nodes)
             
@@ -1633,30 +1624,28 @@ class Scheduler:
                         if node.node.op_overload == torch.ops._c10d_functional.all_gather_into_tensor.default:
                             wait_node_dep.append(node)
                         kernel_name_to_node[node.node.get_name()] = node
-                        #print("MultiOutput/AllGather", node.node.get_name(), node.read_writes.reads)
+                else:
+                    node_depend = depend_dict[node.get_name()]
+                    node = self.create_scheduler_node(node)
+                    node.unmet_dependencies = node_depend
+                    node.read_writes.reads = node_depend
+                    kernel_name_to_node[node.node.get_name()] = node
+               
                 node.min_order = sys.maxsize
                 node.max_order = -sys.maxsize
                 self.name_to_buf[node.node.get_name()] = node.get_outputs()[0]
+       
                 self.name_to_fused_node[node.get_name()] = node
                 self.nodes.append(node)
             else:
                 self.nodes.append(node) 
+
+        #print("self.nodes", self.nodes)
         
         new_node_name = [n.get_name() for n in self.nodes]
         new_buf_name = [n.node.get_name() for n in self.nodes]
         all_gather_dict_keys = list(all_gather_dict.keys())
-
-        self.name_to_buf_new = self.name_to_buf
-        self.name_to_buf = {}
-        for key, value in self.name_to_buf_new.items():
-            if key in new_buf_name:
-                self.name_to_buf[key] = value
-            if "buf" not in key:
-                self.name_to_buf[key] = value
-            if key in all_gather_dict_keys:
-                kernel_name = list(all_gather_dict[key])[0]
-                mapped_node = kernel_name_to_node[kernel_name]
-                self.name_to_buf[key] = mapped_node
+        
         self.name_to_fused_node_new = self.name_to_fused_node
         self.name_to_fused_node = {}
         for key, value in self.name_to_fused_node_new.items():
@@ -1667,21 +1656,30 @@ class Scheduler:
         for node in final_nodes:
             current_unmet_dependencies = list(node.unmet_dependencies)
             current_read_writes = list(node.read_writes.reads)
+
+            if node.node.get_name() == "buf15":
+                current_unmet_dependencies.append(dependencies.StarDep('buf730'))
+                current_read_writes.append(dependencies.StarDep('buf730'))
+                print("node.node.get_name()", node.node.get_name())
+                print("current_unmet_dependencies", current_unmet_dependencies)
+                print("current_read_writes", current_read_writes)
             new_unmet_dependencies =  []
             new_read_writes = []
             for c in current_unmet_dependencies:
-                if isinstance(c, dependencies.StarDep):
-                    if c.name in new_buf_name:
-                        new_unmet_dependencies.append(c)  
-                    elif c.name in all_gather_dict_keys:
-                        new_unmet_dependencies.append(dependencies.StarDep(all_gather_dict[c.name]))
+                if c.name in new_buf_name:
+                    new_unmet_dependencies.append(c)  
+                elif c.name in all_gather_dict_keys:
+                    new_unmet_dependencies.append(dependencies.StarDep(list(all_gather_dict[c.name])[0]))
             for c in current_read_writes:
-                if isinstance(c, dependencies.StarDep):
-                    if c.name in new_buf_name:
-                        new_read_writes.append(c)
-                    elif c.name in all_gather_dict_keys:
-                        new_read_writes.append(dependencies.StarDep(all_gather_dict[c.name]))
+                if c.name in new_buf_name:
+                    new_read_writes.append(c)
+                elif c.name in all_gather_dict_keys:
+                    new_read_writes.append(dependencies.StarDep(list(all_gather_dict[c.name])[0]))
 
+            if node.node.get_name() == "buf15":
+                print("node.node.get_name()", node.node.get_name())
+                print("new_unmet_dependencies", new_unmet_dependencies)
+                print("new_read_writes", new_read_writes)   
             node.unmet_dependencies = set(new_unmet_dependencies)
             node.read_writes.reads = set(new_read_writes)
             current_ancestors = list(node.ancestors)
@@ -2035,7 +2033,10 @@ class Scheduler:
                 seen.add(n)
                 for dep in sorted(n.unmet_dependencies, key=lambda d: d.name):
                     op = self.name_to_buf[dep.name].defining_op
-                    if op.get_name() in node_name_list:
+                    if self.post_grad_graph_id == 0:
+                        if op.get_name() in node_name_list:
+                            visit(self.name_to_fused_node[op.get_name()])
+                    else:
                         visit(self.name_to_fused_node[op.get_name()])
                 result.append(n)
 
@@ -2839,8 +2840,9 @@ class Scheduler:
         ):
             if name in self.name_to_buf:
                 buf = self.name_to_buf[name]
-                if buf.can_free():
-                    V.graph.wrapper_code.codegen_free(buf.node)
+                if hasattr(buf, "can_free"):
+                    if buf.can_free():
+                        V.graph.wrapper_code.codegen_free(buf.node)
             elif name in V.graph.graph_inputs:
                 storage = V.graph.graph_inputs[name].data
                 assert isinstance(storage, ir.StorageBox) and storage.is_input_buffer()
@@ -2853,11 +2855,19 @@ class Scheduler:
         Any buffers that are both created and have a last use in the
         same kernel can be removed.
         """
-
+        '''
         fused_node_names = {
             self.name_to_buf[buf].defining_op.get_name()
             for buf in V.kernel.store_buffer_names
         }
+        '''
+        fused_node_names = []
+        for buf in V.kernel.store_buffer_names:
+            #print("self.name_to_buf[buf]", self.name_to_buf[buf])
+            #print("buf", buf)
+            fused_node_names.append(self.name_to_buf[buf].defining_op.get_name())
+
+        
         names_to_remove = []
         for out_buf in V.kernel.store_buffer_names:
             users = self.name_to_buf[out_buf].users

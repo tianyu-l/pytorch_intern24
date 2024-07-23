@@ -3447,6 +3447,13 @@ class ComputedBuffer(OperationBuffer):
 
     def get_read_writes(self):
         with patch.object(FlexibleLayout, "allow_indexing", True):
+           # print("self.data", self.data)
+            #print("isinstance(self.data, _CollectiveKernel)", isinstance(self.data, _CollectiveKernel))
+            #if isinstance(self.data, StorageBox) and isinstance(self.data.data, _CollectiveKernel):
+           #     return extract_read_writes(
+            #        self.get_store_function(),
+            #        self.data.get_size(),
+             #   )
             if self.data.get_reduction_type():
                 return extract_read_writes(
                     self.get_store_function(),
@@ -5630,9 +5637,6 @@ class FallbackKernel(ExternKernelAlloc):
             )
 
         schema_args = schema.arguments
-        if kernel == torch.ops.fsdp.split_with_sizes_copy.default:
-            print("self.inputs", self.inputs)
-            print("self.constant_args", self.constant_args)
         args, kwargs = self.unflatten_args(self.inputs, self.constant_args)
 
         def handle_aliasing_and_mutation(info, arg):
@@ -6060,7 +6064,6 @@ class FallbackKernel(ExternKernelAlloc):
             non_tensor_args,
             unflatten_args,
             unbacked_bindings,
-            new_args[0]
         )
 
     @staticmethod
@@ -6077,18 +6080,29 @@ class FallbackKernel(ExternKernelAlloc):
         fake_incorrect_kernels = (aten._fused_moving_avg_obs_fq_helper_functional,)
         context = (
             V.graph.fake_mode if kernel not in fake_incorrect_kernels else nullcontext()
-        )    
+        )
         with context:
        
-            if kernel == torch.ops.fsdp.all_gather_copy_in.default:#or torch.ops.fsdp.split_with_sizes_copy.default
+            if kernel == torch.ops.fsdp.all_gather_copy_in.default or kernel == torch.ops.fsdp.split_with_sizes_copy.default:
                 (
                     example_output,
                     tensor_args,
                     non_tensor_args,
                     unflatten_args,
                     unbacked_bindings,
-                    fake_outputs
                 ) = cls.process_kernel_seperate(kernel, *args, **kwargs)
+              
+                if kernel == torch.ops.fsdp.split_with_sizes_copy.default:
+                    tensor_args_new = tensor_args
+                    tensor_args = [tensor_args_new[0]]
+                    for t in tensor_args_new:
+                        #t.layout.dtype = torch.float32
+                        #new_buf = ComputedBuffer(name=t.get_name(), layout=t.layout, data=create_empty_pointwise(t))
+                        new_buf = ComputedBuffer(name=t.get_name(), layout=t.layout, data=t.data)
+                        V.graph.register_operation(new_buf)
+                        V.graph.wrapper_code.codegen_inplace_reuse_ag(new_buf, t)
+                        tensor_args.append(TensorBox(StorageBox(new_buf)))           
+         
             else:
                 (
                     example_output,
@@ -6097,20 +6111,14 @@ class FallbackKernel(ExternKernelAlloc):
                     unflatten_args,
                     unbacked_bindings,
                 ) = cls.process_kernel(kernel, *args, **kwargs)
-
+         
         device = cls.find_device(tensor_args, example_output)
         if example_output is None:
-            print("tensor_args", tensor_args)
-            print("non_tensor_args", non_tensor_args)
-            non_tensor_args_new = []
-            for i in non_tensor_args:
-                if not isinstance(i, FakeTensor):
-                    non_tensor_args_new.append(i)
             packed = cls(
                 NoneLayout(device),
                 kernel,
                 tensor_args,
-                non_tensor_args_new,
+                non_tensor_args,
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
@@ -6125,6 +6133,9 @@ class FallbackKernel(ExternKernelAlloc):
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
+
+        if kernel == torch.ops.fsdp.split_with_sizes_copy.default:
+            return packed
 
         def generate_output(output, indices):
             if isinstance(output, (list, tuple)):
@@ -6152,42 +6163,14 @@ class FallbackKernel(ExternKernelAlloc):
                     output is None
                 ), f"FallbackKernel output type {type(output)} is not supported"
                 return None
-
         outputs = generate_output(example_output, [])
+ 
+        
         if isinstance(outputs, (list, tuple, dict)):
             packed.outputs = outputs  # type: ignore[assignment]
         else:
             packed.outputs = [outputs]
         return outputs
-    @classmethod
-    def create_size(cls, kernel, *args, **kwargs):
-        fake_incorrect_kernels = (aten._fused_moving_avg_obs_fq_helper_functional,)
-        context = (
-            V.graph.fake_mode if kernel not in fake_incorrect_kernels else nullcontext()
-        )    
-        with context:
-            if kernel == torch.ops.fsdp.all_gather_copy_in.default or torch.ops.fsdp.split_with_sizes_copy.default:
-                (
-                    example_output,
-                    tensor_args,
-                    non_tensor_args,
-                    unflatten_args,
-                    unbacked_bindings,
-                    fake_outputs
-                ) = cls.process_kernel_seperate(kernel, *args, **kwargs)
-            else:
-                (
-                    example_output,
-                    tensor_args,
-                    non_tensor_args,
-                    unflatten_args,
-                    unbacked_bindings,
-                ) = cls.process_kernel(kernel, *args, **kwargs)
-
-        print("example_output", example_output)
-        print("fake_outputs", fake_outputs)
-        device = cls.find_device(tensor_args, example_output)
-        return fake_outputs, example_output[0]
 
 @dataclasses.dataclass
 class ComplexView(FallbackKernel):
@@ -7190,7 +7173,6 @@ class _CollectiveKernel(FallbackKernel):
                         non_tensor_args,
                         unflatten_args,
                         unbacked_bindings,
-                        fake_output
                     ) = cls.process_kernel_seperate(kernel, inputs, *args, **kwargs)
             else:
                 (
@@ -7234,7 +7216,7 @@ class _CollectiveKernel(FallbackKernel):
             packed.cpp_kernel_name = cpp_kernel_name
             packed.python_kernel_name = python_kernel_name
             packed.outputs = [packed]
-            #print(packed)
+            packed.example_output = example_output
             #packed.input_for_merge = TensorBox(StorageBox(inputs.data.data.data))
             return packed
 
