@@ -1805,23 +1805,37 @@ class WrapperCodeGen(CodeGen):
                 f"{self.comment} alias",
             )
         )
-
-    def codegen_allocation(self, buffer: ir.Buffer):
+    
+    def codegen_allocation(self, buffer: ir.Buffer, flag=False, force_alloc=False):
         name = buffer.get_name()
-
+        flag = False
         if name in V.graph.removed_buffers or name in self.allocated:
+            if flag:
+                print("here1")
             return
         self.allocated.add(name)
+
+        if force_alloc:
+            #print(f"here11: force alloc: {buffer.get_name()}")
+            self.writeline(AllocateLine(self, buffer))
+            return
+
         if isinstance(
             buffer.get_defining_op(),
             (ir.ExternKernelAlloc, ir.MultiOutput),
         ):
+            if flag:
+                print("here2")
             return
-
+ 
         layout = buffer.get_layout()
         if isinstance(layout, ir.MutationLayoutSHOULDREMOVE):
+            if flag:
+                print("here3")
             return
         if isinstance(layout, ir.NoneLayout):
+            if flag:
+                print("here4")
             return
         if isinstance(layout, ir.NonOwningLayout):
             assert isinstance(
@@ -1831,8 +1845,12 @@ class WrapperCodeGen(CodeGen):
             assert isinstance(layout.view.data.data, ir.Buffer), type(layout.view.data)
             self.codegen_allocation(layout.view.data.data)
             self.codegen_deferred_allocation(name, layout)
+            if flag:
+                print("here5")
             return
 
+        if flag:
+            print("here6")
         self.writeline(AllocateLine(self, buffer))
 
     def codegen_free(self, buffer):

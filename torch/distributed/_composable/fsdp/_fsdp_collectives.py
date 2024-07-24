@@ -80,8 +80,12 @@ def all_gather_copy_in_cuda(
     all_gather_input = all_gather_output.narrow(
         0, all_gather_input_numel * rank, all_gather_input_numel
     )
+    #print("size all_gather_input", all_gather_input.size())
+    #print("inp_split_sizes", inp_split_sizes)
     foreach_copy_dsts = torch.split(all_gather_input, inp_split_sizes)
+    #print("all_gather_inputs before", [a.size() for a in all_gather_inputs])
     all_gather_inputs = [t.flatten() for t in all_gather_inputs]
+    #print("all_gather_inputs after", [a.size() for a in all_gather_inputs], all_gather_inputs)
     with torch.no_grad():
         torch._foreach_copy_(foreach_copy_dsts, all_gather_inputs)
     return all_gather_input, all_gather_output
@@ -98,13 +102,17 @@ lib.define(
 def split_with_sizes_copy(
     all_gather_output: torch.Tensor,
     all_gather_input_split_sizes: List[int],
+    dim: int,
     out: List[torch.Tensor],
-    dim: int=0,
 ) -> None:
+    world_size = dist.get_world_size()
+    out = [o.view(world_size, -1) for o in out]
+    all_gather_output = all_gather_output.view(world_size, -1)
+    all_gather_input_split_sizes = [a//world_size for a in all_gather_input_split_sizes]
+ 
     torch.split_with_sizes_copy(
         all_gather_output, all_gather_input_split_sizes, dim=dim, out=out
     )
-
 
 lib.define(
     "chunk_cat(Tensor[] tensors, int dim, int num_chunks, *, Tensor(a!) out) -> ()"
@@ -218,11 +226,12 @@ def foreach_all_gather_copy_out(
             fsdp_param.alloc_all_gather_outputs()
     all_gather_output = all_gather_output.view(world_size, -1)
     gen = (t for fsdp_param in fsdp_params for t in fsdp_param.all_gather_outputs)
+ 
     if all_gather_output.dtype == torch.uint8:
         out = [t.view(world_size, -1).view(torch.uint8) for t in gen]
     else:
         out = [t.view(world_size, -1) for t in gen]
-    
+ 
     torch.ops.fsdp.split_with_sizes_copy(
         all_gather_output, all_gather_input_split_sizes, dim=1, out=out
     )

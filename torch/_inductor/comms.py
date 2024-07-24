@@ -153,7 +153,6 @@ def compute_node_users(
 
         for buf in node.get_outputs():
             buf_to_snode[buf.get_name()] = node
-
     # compute inverse_users
     inverse_users = {
         node: {buf_to_snode[dep.name] for dep in node.unmet_dependencies}

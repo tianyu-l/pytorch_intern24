@@ -5953,6 +5953,9 @@ class FallbackKernel(ExternKernelAlloc):
             )
         else:
             self.codegen_comment(wrapper)
+            if self.op_overload == torch.ops.fsdp.split_with_sizes_copy.default:
+                for buf in self.inputs[1:]:
+                    V.graph.wrapper_code.codegen_allocation(buf, flag=True, force_alloc=True)
             args = [*self.codegen_args(), *self.codegen_kwargs()]
             V.graph.wrapper_code.generate_fallback_kernel(self, args)
             if isinstance(self.layout, Layout):
@@ -6092,16 +6095,16 @@ class FallbackKernel(ExternKernelAlloc):
                     unbacked_bindings,
                 ) = cls.process_kernel_seperate(kernel, *args, **kwargs)
               
-                if kernel == torch.ops.fsdp.split_with_sizes_copy.default:
-                    tensor_args_new = tensor_args
-                    tensor_args = [tensor_args_new[0]]
-                    for t in tensor_args_new:
+               # if kernel == torch.ops.fsdp.split_with_sizes_copy.default:
+               #     tensor_args_new = tensor_args
+               #     tensor_args = [tensor_args_new[0]]
+               #     for t in tensor_args_new:
                         #t.layout.dtype = torch.float32
                         #new_buf = ComputedBuffer(name=t.get_name(), layout=t.layout, data=create_empty_pointwise(t))
-                        new_buf = ComputedBuffer(name=t.get_name(), layout=t.layout, data=t.data)
-                        V.graph.register_operation(new_buf)
-                        V.graph.wrapper_code.codegen_inplace_reuse_ag(new_buf, t)
-                        tensor_args.append(TensorBox(StorageBox(new_buf)))           
+               #         new_buf = ComputedBuffer(name=t.get_name(), layout=t.layout, data=t.data)
+                #       V.graph.register_operation(new_buf)
+                 #       V.graph.wrapper_code.codegen_inplace_reuse_ag(new_buf, t)
+                #        tensor_args.append(TensorBox(StorageBox(new_buf)))           
          
             else:
                 (
