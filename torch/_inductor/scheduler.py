@@ -1553,19 +1553,18 @@ class Scheduler:
         self.logged_slow_fusion: Set[Tuple[str, str]] = set()
         debug = False        
         
-        self.nodes = self.fuse_nodes(self.nodes)
+        self.nodes = self.fuse_nodes(self.nodes)      
+ 
         self.nodes, depend_dict, all_gather_dict = simple_fsdp.bucketing_all_gather_per_blcok(self, self.nodes, self.post_grad_graph_id)
-            #self.nodes = self.update_dependencies(self.nodes, depend_dict, all_gather_dict)
-        
-        '''
+
         if self.post_grad_graph_id == 0:
             # reorder forward graph
-            self.nodes = simple_fsdp.reorder_all_gather(self.nodes, all_gather_before_last_wait=True)
+            self.nodes = simple_fsdp.reorder_all_gather(self.nodes, self.post_grad_graph_id, all_gather_before_last_wait=True)
         elif self.post_grad_graph_id == 1:
             # reorder backward graph
-            self.nodes = simple_fsdp.reorder_all_gather(self.nodes, all_gather_before_last_wait=False)
+            self.nodes = simple_fsdp.reorder_all_gather(self.nodes, self.post_grad_graph_id, all_gather_before_last_wait=False)
             self.nodes = simple_fsdp.reorder_reduce_scatter(self.nodes)
-        '''
+
         self.finalize_multi_template_buffers()
         self.process_grouped_nodes()
         self.compute_last_usage()

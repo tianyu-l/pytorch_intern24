@@ -62,6 +62,7 @@ def compute_bucket_users(
  
 def reorder_all_gather(
     snodes: List["scheduler.BaseSchedulerNode"],
+    graph_id: int,
     all_gather_before_last_wait: Optional[bool] = True,
 ) -> List["scheduler.BaseSchedulerNode"]:
     """
@@ -72,48 +73,81 @@ def reorder_all_gather(
     result_list: List[scheduler.BaseSchedulerNode] = []
     all_gather_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
-
+ 
     inverse_users, node_users = compute_bucket_users(snodes)
     snodes.reverse()
 
     for node in snodes:
         node_to_type[node] = get_node_type(node)
 
+    
     for idx, node in enumerate(snodes):
         node_type = node_to_type[node]
         if node_type in [NodeType.REDUCE_SCATTER, NodeType.COMPUTE]:
             # we do not reorder reduce scatter and compute node
+ 
             if node not in result_list and node not in all_gather_list:
                 result_list.append(node)
         elif node_type == NodeType.ALL_GATHER:
             # gather i-th all gather node and its dependencies
+             
             all_gather_list.append(node)
             inverse_user = list(inverse_users[node])
-            if len(inverse_user) > 0:
+            if len(inverse_user) > 0 and not node_to_type[inverse_user[0]] == NodeType.ALL_GATHER and inverse_user not in all_gather_list:
                 all_gather_list.extend(inverse_user)
         elif node_type == NodeType.WAIT:
             if (
-                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+               ( (node_to_type[snodes[idx + 1]] == NodeType.WAIT and node_to_type[snodes[idx + 2]] == NodeType.ALL_GATHER) or
+                 (node_to_type[snodes[idx + 1]] ==  NodeType.ALL_GATHER and node_to_type[snodes[idx - 1]] !=  NodeType.WAIT  )
+               )
                 and not all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
+                
                 # move i-th all gather node and its dependencies after (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
-            # add wait node
+            #elif (
+            #    node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER  
+            #    and not all_gather_before_last_wait
+            #    and len(all_gather_list) > 0
+            #):
+                
+                # move i-th all gather node and its dependencies after (i-1)-th wait node (bc this is a reverse list)
+            #    result_list.extend(all_gather_list)
+            #    all_gather_list = []
+            
             result_list.append(node)
             if (
-                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+                ((node_to_type[snodes[idx - 1]] == NodeType.WAIT and node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER ) or
+                (node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER and node_to_type[snodes[idx - 1]] != NodeType.WAIT))
                 and all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
                 # move i-th all gather node and its dependencies before (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
-
+            #if (
+            #    node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER  
+            #    and  not all_gather_before_last_wait
+            #    and len(all_gather_list) > 0
+            #):
+                # move i-th all gather node and its dependencies before (i-1)-th wait node (bc this is a reverse list)
+            #    result_list.extend(all_gather_list)
+            #    all_gather_list = []
+        
     if len(all_gather_list) > 0:
         result_list.extend(all_gather_list)
     result_list.reverse()
+
+    if graph_id == 0:
+        print_list = []
+        for node in result_list:
+            if not isinstance(node, scheduler.FusedSchedulerNode):
+                print_list.append(node.node.get_name())
+
+       # print("print_list", print_list)
+
     return result_list
 
 
@@ -129,16 +163,26 @@ def reorder_reduce_scatter(
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
 
     inverse_users, node_users = compute_bucket_users(snodes)
-
+    
+    print_list = []
     for node in snodes:
         node_to_type[node] = get_node_type(node)
+        if not isinstance(node, scheduler.FusedSchedulerNode):
+            print_list.append(node.node.get_name())
 
+    isolate_compute = []
     for idx, node in enumerate(snodes):
         node_type = node_to_type[node]
         if node_type in [NodeType.ALL_GATHER, NodeType.COMPUTE]:
-            # we do not reorder all gather and compute node
-            if node not in wait_list:
+            #    isolate_compute.append(node)
+            #else:
+           #     if node_type == NodeType.COMPUTE and len(isolate_compute) > 0 and not isinstance(node, scheduler.FusedSchedulerNode) and "convert_element_type" not in str(node.node.origin_node):
+           #         result_list.extend(isolate_compute)
+             #       isolate_compute = []
+            if node not in result_list:
                 result_list.append(node)
+            if not isinstance(node, scheduler.FusedSchedulerNode) and node.node.get_name() == "buf0":
+                result_list.append(list(node_users[node])[0])
         elif node_type == NodeType.WAIT:
             if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER:
                 # gather wait node after reduce scatter
@@ -147,16 +191,22 @@ def reorder_reduce_scatter(
             else:
                 # we do not reorder wait node after all gather
                 result_list.append(node)
+       
         elif node_type == NodeType.REDUCE_SCATTER:
             if len(wait_list) > 0:
                 # move the i-th wait node before (i+1)-th reduce scatter node
                 result_list.extend(wait_list)
-                wait_list = []
+                wait_list = []    
             # add reduce scatter node
             result_list.append(node)
-
+            
     if len(wait_list) > 0:
         result_list.extend(wait_list)
+
+    print_list = []
+    for node in result_list:
+        if not isinstance(node, scheduler.FusedSchedulerNode):
+            print_list.append(node.node.get_name())
     return result_list
 
 
@@ -177,36 +227,14 @@ def get_node_type(node) -> int:
             == torch.ops._c10d_functional.reduce_scatter_tensor.default
         ):
             return NodeType.REDUCE_SCATTER
-    #elif isinstance(node.node, ir.FallbackKernel):
-    #    if node.node.op_overload == torch.ops.fsdp.split_with_sizes_copy.default:
-    #        return NodeType.ALL_GATHER
-    #    elif node.node.op_overload == torch.ops.fsdp.all_gather_copy_in.default:
-    #        return NodeType.WAIT
-
-    return NodeType.COMPUTE
-
-def get_node_type_print(node) -> int:
-    if isinstance(node, scheduler.FusedSchedulerNode):
-        return NodeType.COMPUTE
-
-    if isinstance(node.node, ir._WaitKernel):
-        return NodeType.WAIT
-    elif isinstance(node.node, ir._CollectiveKernel):
-        if (
-            node.node.op_overload
-            == torch.ops._c10d_functional.all_gather_into_tensor.default
-        ):
-            return NodeType.ALL_GATHER
-        elif (
-            node.node.op_overload
-            == torch.ops._c10d_functional.reduce_scatter_tensor.default
-        ):
-            return NodeType.REDUCE_SCATTER
     elif isinstance(node.node, ir.FallbackKernel):
         if node.node.op_overload == torch.ops.fsdp.split_with_sizes_copy.default:
-            return NodeType.ALL_GATHER
-        elif node.node.op_overload == torch.ops.fsdp.all_gather_copy_in.default:
             return NodeType.WAIT
+        elif node.node.op_overload == torch.ops.fsdp.all_gather_copy_in.default:
+            return NodeType.ALL_GATHER
+    elif isinstance(node.node, ir.MultiOutput):
+        if isinstance(node.node.inputs[0], ir.FallbackKernel) and node.node.inputs[0].op_overload == torch.ops.fsdp.all_gather_copy_in.default:
+            return NodeType.ALL_GATHER
 
     return NodeType.COMPUTE
 
@@ -240,6 +268,7 @@ def bucketing_all_gather_per_blcok(
     inverse_users, node_users = comms.compute_node_users(snodes)
     node_block_list = []
     last_module = None
+    c = 0
     for node in snodes:
         if isinstance(node, scheduler.FusedSchedulerNode):
             node_module = get_block_level(node.snodes[0])
@@ -247,12 +276,34 @@ def bucketing_all_gather_per_blcok(
             node_module = get_block_level(node)
         if node_module == -1:
             node_module = last_module
+        if graph_id==0 and node_module == "L['self'].norm":
+            node_module = "L['self'].output"
+
+        if graph_id == 0:
+            if  c < 30:
+                if c < 7:
+                    if node_module == "L['self']._modules['layers']._modules['0']":
+                        node_module = "L['self'].tok_embeddings1"
+                    else:
+                        if len(node_block_list) > 0:
+                            node_module = node_block_list[0]
+                        else:
+                            node_module = node_module
+                if not isinstance(node, scheduler.FusedSchedulerNode):
+                    print("node", node.node.get_name(), node_module)
+                else:
+                    for n in node.snodes:
+                        print("n", n.node.get_name(), node_module)
+            c = c+1
+            
         node_block_list.append(node_module)
         last_module = node_module
-    
+
+        
     for i in range(1, len(node_block_list)-2):
         if node_block_list[i] != node_block_list[i-1] and node_block_list[i] != node_block_list[i+1] and node_block_list[i-1] == node_block_list[i+1]:
             node_block_list[i] = node_block_list[i-1]
+    
     count_ag = 0
     compute = []
     comm = []
@@ -273,9 +324,6 @@ def bucketing_all_gather_per_blcok(
         current_module = node_block_list[idx]
         if current_module != last_module:
             if isinstance(node, scheduler.FusedSchedulerNode) or (node.node.get_name() not in bucket_list_name and get_node_type(node) == NodeType.COMPUTE):
-                #if node.node.get_name() in list(add_dep.keys()):
-                #    node.unmet_dependencies = set(list(node.unmet_dependencies) + list(add_dep[node.node.get_name()]))
-                #    node.read_writes.reads = set(list(node.read_writes.reads) + list(add_dep[node.node.get_name()]))
                 bucket_list.append(node)
                 if isinstance(node, scheduler.FusedSchedulerNode):
                     for n in node.snodes:
@@ -395,7 +443,8 @@ def merge_allgather(sched, nodes, dep_nodes):
             inp_split_sizes, all_gather_input_numel, nodes[0].node.constant_args[0], int(nodes[0].node.constant_args[1]), dtype, device)
     copy_in_snode = create_scheduler_node_from_ir_node(sched, V.graph.operations[-3])
     copy_in_output_snode = create_scheduler_node_from_ir_node(sched, V.graph.operations[-2])
-     
+    #print("copy_in_snode", copy_in_snode.node)
+    #print("copy_in_output_snode", copy_in_output_snode.node)
     ag_node = ir._CollectiveKernel.create_out_of_place(
         torch.ops._c10d_functional.all_gather_into_tensor.default, 
         copy_in_output, nodes[0].node.constant_args[0], nodes[0].node.constant_args[1]) # 
