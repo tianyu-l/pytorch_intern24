@@ -1594,8 +1594,7 @@ class Scheduler:
         if config._pre_fusion_custom_pass is not None:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
-        
-        # do prefetching reordering
+ 
         if self.post_grad_graph_id == 0:
             # reorder forward graph
             self.nodes = simple_fsdp.reorder_all_gather(
