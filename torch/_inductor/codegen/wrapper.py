@@ -1811,6 +1811,13 @@ class WrapperCodeGen(CodeGen):
         if name in V.graph.removed_buffers or name in self.allocated:
             return
         self.allocated.add(name)
+
+        if force_alloc:
+            #print(f"here11: force alloc: {buffer.get_name()}")
+            self.writeline(AllocateLine(self, buffer))
+            #print("AllocateLine(self, buffer)", self.writeline(AllocateLine(self, buffer)))
+            return
+
         if isinstance(
             buffer.get_defining_op(),
             (ir.ExternKernelAlloc, ir.MultiOutput),
