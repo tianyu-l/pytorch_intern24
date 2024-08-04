@@ -1,6 +1,7 @@
 import math
 from enum import IntEnum
-from typing import defaultdict, Dict, List, Optional, Set, Tuple, Union
+from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -38,7 +39,7 @@ def merge_allgather(
     copy_in_inputs = []
     for dep in dep_nodes:
         copy_in_inputs.append(dep.node)
-
+       
     # create all_gather copy_in's nodes
     inp_split_flatten = [math.prod(cbuf.get_layout().size) for cbuf in copy_in_inputs]
     inp_split_sizes = inp_split_flatten
@@ -114,6 +115,7 @@ def merge_reducescatter(
     """
     Bucket small REDUCE_SCATTER nodes into one big REDUCE_SCATTER node
     """
+    dep_nodes = [r for r in dep_nodes if not isinstance(r, scheduler.FusedSchedulerNode)]
     if len(nodes) == 1:
         return (dep_nodes + nodes, [])
 

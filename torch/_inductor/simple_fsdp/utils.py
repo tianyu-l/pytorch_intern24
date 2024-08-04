@@ -1,6 +1,7 @@
 import math
 from enum import IntEnum
-from typing import defaultdict, Dict, List, Optional, Set, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.distributed as dist

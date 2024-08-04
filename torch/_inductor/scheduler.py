@@ -38,7 +38,7 @@ from torch.utils._ordered_set import OrderedSet
 from torch.utils._sympy.symbol import free_symbol_is_type, SymT
 from torch.utils._triton import has_triton
 
-from . import comms, config, dependencies, ir, metrics, simple_fsdp
+from . import comms, config, dependencies, ir, metrics
 from .codecache import write_text
 from .codegen.common import BackendFeature, get_scheduling_for_device, Kernel
 from .comm_analysis import estimate_nccl_collective_runtime
@@ -1595,23 +1595,19 @@ class Scheduler:
         if config._pre_fusion_custom_pass is not None:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
-        
-        self.nodes = fsdp_bucket.bucket_all_gather_by_block(self, self.nodes) 
-    
-        #if self.post_grad_graph_id == 1:
-        #    self.nodes = fsdp_bucket.bucket_reduce_scatter_by_block(self, self.nodes)
 
-        if self.post_grad_graph_id == 0:
-            # reorder forward graph
-            self.nodes = fsdp_reorder.reorder_all_gather(
-                self.nodes, all_gather_before_last_wait=True
-            )
-        elif self.post_grad_graph_id == 1:
-            # reorder backward graph
-            self.nodes = fsdp_reorder.reorder_all_gather(
-                self.nodes, all_gather_before_last_wait=False
-            )
-            self.nodes = fsdp_reorder.reorder_reduce_scatter(self.nodes)
+        if config.simplefsdp.enable_reorder:
+            if self.post_grad_graph_id == 0:
+                # reorder forward graph
+                self.nodes = fsdp_reorder.reorder_all_gather(
+                    self.nodes, all_gather_before_last_wait=True
+                )
+            elif self.post_grad_graph_id == 1:
+                # reorder backward graph
+                self.nodes = fsdp_reorder.reorder_all_gather(
+                    self.nodes, all_gather_before_last_wait=False
+                )
+                self.nodes = fsdp_reorder.reorder_reduce_scatter(self.nodes, front_node)
         
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:

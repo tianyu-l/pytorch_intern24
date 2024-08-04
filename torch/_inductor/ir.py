@@ -6049,10 +6049,7 @@ class FallbackKernel(ExternKernelAlloc):
             )
         else:
             self.codegen_comment(wrapper)
-            if (
-                self.op_overload == torch.ops.fsdp.split_with_sizes_copy.default
-                or self.op_overload == torch.ops.fsdp.read_out.default
-            ):
+            if self.op_overload == torch.ops.fsdp.split_with_sizes_copy.default or self.op_overload == torch.ops.fsdp.read_out.default:
                 for buf in self.inputs[1:]:
                     V.graph.wrapper_code.codegen_allocation(
                         buf, force_alloc=True
