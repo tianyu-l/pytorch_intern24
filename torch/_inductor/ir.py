@@ -5949,6 +5949,12 @@ class FallbackKernel(ExternKernelAlloc):
             )
         else:
             self.codegen_comment(wrapper)
+            if self.op_overload == torch.ops.fsdp.split_with_sizes_copy.default:
+                for buf in self.inputs[1:]:
+                    V.graph.wrapper_code.codegen_allocation(buf, flag=True, force_alloc=True)
+            if self.op_overload == torch.ops.fsdp.chunk_cat.default:
+                for buf in self.inputs:
+                    V.graph.wrapper_code.codegen_allocation(buf, flag=True, force_alloc=True)
             args = [*self.codegen_args(), *self.codegen_kwargs()]
             V.graph.wrapper_code.generate_fallback_kernel(self, args)
             if isinstance(self.layout, Layout):
@@ -5971,15 +5977,26 @@ class FallbackKernel(ExternKernelAlloc):
         context: ContextManager[None] = (
             V.graph.fake_mode if kernel not in fake_incorrect_kernels else nullcontext()  # type: ignore[assignment]
         )
+        print("kernel", kernel)
         with context:
-            (
-                example_output,
-                tensor_args,
-                non_tensor_args,
-                unflatten_args,
-                unbacked_bindings,
-            ) = cls.process_kernel(kernel, *args, **kwargs)
-
+       
+            if kernel == torch.ops.fsdp.all_gather_copy_in.default or kernel == torch.ops.fsdp.split_with_sizes_copy.default or kernel == torch.ops.fsdp.chunk_cat.default:
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = cls.process_kernel_seperate(kernel, *args, **kwargs)
+            else:
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = cls.process_kernel(kernel, *args, **kwargs)
+         
         device = cls.find_device(tensor_args, example_output)
         if example_output is None:
             packed = cls(
@@ -6001,6 +6018,9 @@ class FallbackKernel(ExternKernelAlloc):
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
+
+        if kernel == torch.ops.fsdp.split_with_sizes_copy.default or kernel == torch.ops.fsdp.chunk_cat.default:
+            return packed
 
         def generate_output(output, indices):
             if isinstance(output, (list, tuple)):
@@ -7043,7 +7063,9 @@ class _CollectiveKernel(FallbackKernel):
     ):
         cpp_kernel_name = kernel._name
         python_kernel_name = cpp_kernel_name.replace("::", ".")
+        #print("inputs", inputs.op_overload)
         with V.graph.fake_mode:
+<<<<<<< HEAD
             (
                 example_output,
                 tensor_args,
@@ -7052,6 +7074,33 @@ class _CollectiveKernel(FallbackKernel):
                 unbacked_bindings,
             ) = cls.process_kernel(kernel, inputs, *args, **kwargs)
         assert not unbacked_bindings, f"{kernel}, {unbacked_bindings}"
+=======
+            if isinstance(inputs, MultiOutput):
+                if inputs.inputs[0].op_overload==torch.ops.fsdp.all_gather_copy_in.default:
+                    (
+                        example_output,
+                        tensor_args,
+                        non_tensor_args,
+                        unflatten_args,
+                        unbacked_bindings,
+                    ) = cls.process_kernel_seperate(kernel, inputs, *args, **kwargs)
+            elif isinstance(inputs, FallbackKernel) and inputs.op_overload == torch.ops.fsdp.chunk_cat.default:
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = cls.process_kernel_seperate(kernel, inputs, *args, **kwargs)
+            else:
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = cls.process_kernel(kernel, inputs, *args, **kwargs)
+>>>>>>> 1613e4bbbf (enable bucketing)
         for tensor_arg in tensor_args:
             tensor_arg.realize()
 
