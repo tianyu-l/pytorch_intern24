@@ -2,7 +2,8 @@
 # pyre-strict
 import math
 from enum import IntEnum
-from typing import defaultdict, Dict, List, Optional, Set, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.distributed as dist
@@ -28,7 +29,7 @@ def reorder_all_gather(
     
     for node in snodes:
         node_to_type[node] = get_node_type(node)
- 
+    
     snodes.reverse()
     for idx, node in enumerate(snodes):
         node_type = node_to_type[node]
@@ -93,6 +94,7 @@ def reorder_all_gather(
 
 def reorder_reduce_scatter(
     snodes: List["scheduler.BaseSchedulerNode"],
+    front_node: "scheduler.BaseSchedulerNode"
 ) -> List["scheduler.BaseSchedulerNode"]:
     """
     Reorder Reduce Scatter and Wait in the backward pass
@@ -133,4 +135,47 @@ def reorder_reduce_scatter(
 
     if len(wait_list) > 0:
         result_list.extend(wait_list)
+
+    # minor adjust to ensure overlapping between FWD & BWD
+    pick_up_wait = []
+    new_result_list = []
+    picked = False
+    append = False
+    for i in result_list:
+        if not picked and get_node_type(i) == NodeType.AG_WAIT:
+            pick_up_wait.append(i)
+            if len(pick_up_wait) == 2:
+                picked = True 
+        else:
+            if i not in pick_up_wait:
+                new_result_list.append(i)    
+            if not append and picked and i == front_node:
+                new_result_list.extend(pick_up_wait)
+                append = True  
+            if append and picked:
+                break
+    result_list[:len(new_result_list)]  = new_result_list
+     
     return result_list
+
+
+def get_front_node(
+    snodes: List["scheduler.BaseSchedulerNode"],
+) -> "scheduler.BaseSchedulerNode":
+    """
+    Get the front node used for hide BWD communication
+    """
+    i = 0
+    inverse_users, node_users = compute_bucket_users(snodes)
+    front_node = snodes[0]
+    see_other_type = False
+    for node in snodes:
+        if get_node_type(node) == NodeType.COMPUTE and not see_other_type:
+            users = [get_node_type(i) for i in list(node_users[node])]
+            if NodeType.REDUCE_SCATTER in users:
+                front_node = node
+                break
+        else:
+            see_other_type = True
+            break
+    return front_node

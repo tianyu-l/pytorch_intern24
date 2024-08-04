@@ -1,6 +1,7 @@
 import math
 from enum import IntEnum
-from typing import defaultdict, Dict, List, Optional, Set, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.distributed as dist
@@ -31,7 +32,7 @@ def bucket_all_gather_by_block(
         node_block_list.append(node_module)
         last_module = node_module
     node_block_list = merge_block_name(node_block_list)
- 
+
     # bucket ALL_GATHER and AG_WAIT by block
     result_list = []
     all_gather_list = []
@@ -82,6 +83,7 @@ def bucket_all_gather_by_block(
                 result_list.append(n)
         
     result_list.reverse()
+ 
     return result_list
 
 
@@ -92,7 +94,6 @@ def bucket_reduce_scatter_by_block(
     """
     Bucket REDUCE_SCATTER and RS_WAIT by block
     """
-    print("bucket_reduce_scatter_by_block")
     inverse_users, node_users = compute_bucket_users(snodes)
 
     # get the block each node belongs to
@@ -115,8 +116,9 @@ def bucket_reduce_scatter_by_block(
     reduce_scatter_dep_list = []
     rs_wait_list = []
     rs_wait_dep_list = []
+    fused_list = []
     last_module = node_block_list[0]
-
+    
     for idx, node in enumerate(snodes):
         current_module = node_block_list[idx]
         if current_module != last_module and len(reduce_scatter_list) > 0:
@@ -138,9 +140,9 @@ def bucket_reduce_scatter_by_block(
             # add the small reduce_scatter to bucket
             reduce_scatter_list.append(node)
             inverse_user = list(inverse_users[node])
-            # print("inverse_user", inverse_user)
             if len(inverse_user) > 0:
                 if isinstance(inverse_user[0], scheduler.FusedSchedulerNode):
+                    fused_list.append(inverse_user[0])
                     for i in inverse_user[0].snodes:
                         if i not in reduce_scatter_dep_list:
                             reduce_scatter_dep_list.append(i)
@@ -156,7 +158,6 @@ def bucket_reduce_scatter_by_block(
             if node not in result_list and node not in reduce_scatter_dep_list and node not in rs_wait_dep_list:
                 result_list.append(node)
         last_module = current_module
-
     assert len(reduce_scatter_list) == len(rs_wait_list)
     
     if len(reduce_scatter_list) > 0:
@@ -165,6 +166,8 @@ def bucket_reduce_scatter_by_block(
         for n in merged_reduce_scatter + merged_wait:
             if n not in result_list:
                 result_list.append(n)
+
+    result_list = [r for r in result_list if r not in fused_list]
 
     return result_list
 
@@ -177,7 +180,7 @@ def merge_block_name(
     1. Merge the last two blocks as a bigger block, for better overlapping between FWD & BWD
     2. Fix the outlier node block annotation
     """
-    # TODO[ruisizhang123]: this is an adhoc fix bc compiler module trace bugs
+    # TODO(ruisizhang123): this is an adhoc fix bc compiler module trace bugs
     next_to_last, last = "L['self'].norm", "L['self'].output" 
     first_block = node_block_list[0]
     for i in range(1, len(node_block_list) - 2):
@@ -197,6 +200,18 @@ def merge_block_name(
         if node_block_list[i] == next_to_last:
             # merge the last two blocks as a bigger block
             node_block_list[i] = last
+    
+    for i in range(1, len(node_block_list) - 2):
+        if (
+            node_block_list[i] != node_block_list[i - 1]
+            and node_block_list[i] != node_block_list[i + 1]
+            and node_block_list[i - 1] == node_block_list[i + 1]
+        ):
+            # fix outlier node block annotation
+            node_block_list[i] = node_block_list[i - 1]
+        if first_block == "":
+            first_block = node_block_list[i]
+
     # make sure every node is annotated
     assert "" not in node_block_list
     return node_block_list
