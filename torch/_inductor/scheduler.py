@@ -45,6 +45,7 @@ from .comm_analysis import estimate_nccl_collective_runtime
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .ir import ComputedBuffer, MultiOutput, MultiOutputLayout
 from .runtime.runtime_utils import green_text, red_text
+from .simple_fsdp import fsdp_bucket, fsdp_reorder
 from .sizevars import SimplifyIndexing
 from .utils import (
     cache_on_self,
@@ -1594,19 +1595,24 @@ class Scheduler:
         if config._pre_fusion_custom_pass is not None:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
-        # do prefetching reordering
+        
+        self.nodes = fsdp_bucket.bucket_all_gather_by_block(self, self.nodes) 
+    
+        #if self.post_grad_graph_id == 1:
+        #    self.nodes = fsdp_bucket.bucket_reduce_scatter_by_block(self, self.nodes)
+
         if self.post_grad_graph_id == 0:
             # reorder forward graph
-            self.nodes = simple_fsdp.reorder_all_gather(
+            self.nodes = fsdp_reorder.reorder_all_gather(
                 self.nodes, all_gather_before_last_wait=True
             )
         elif self.post_grad_graph_id == 1:
             # reorder backward graph
-            self.nodes = simple_fsdp.reorder_all_gather(
+            self.nodes = fsdp_reorder.reorder_all_gather(
                 self.nodes, all_gather_before_last_wait=False
             )
-            self.nodes = simple_fsdp.reorder_reduce_scatter(self.nodes)
-
+            self.nodes = fsdp_reorder.reorder_reduce_scatter(self.nodes)
+        
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:
             self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)

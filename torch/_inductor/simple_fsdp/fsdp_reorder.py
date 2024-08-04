@@ -1,18 +1,15 @@
 # mypy: allow-untyped-defs
 # pyre-strict
+import math
 from enum import IntEnum
-from typing import Dict, List, Optional
+from typing import defaultdict, Dict, List, Optional, Set, Tuple
 
 import torch
+import torch.distributed as dist
+from .. import dependencies, ir, scheduler
+from ..virtualized import V
 
-from . import comms, ir, scheduler
-
-
-class NodeType(IntEnum):
-    ALL_GATHER = 0
-    WAIT = 1
-    COMPUTE = 2
-    REDUCE_SCATTER = 3
+from .utils import NodeType, compute_bucket_users, get_node_type
 
 
 def reorder_all_gather(
@@ -27,16 +24,15 @@ def reorder_all_gather(
     result_list: List[scheduler.BaseSchedulerNode] = []
     all_gather_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
-
-    inverse_users, node_users = comms.compute_node_users(snodes)
-    snodes.reverse()
-
+    inverse_users, node_users = compute_bucket_users(snodes)
+    
     for node in snodes:
         node_to_type[node] = get_node_type(node)
-
+ 
+    snodes.reverse()
     for idx, node in enumerate(snodes):
         node_type = node_to_type[node]
-        if node_type in [NodeType.REDUCE_SCATTER, NodeType.COMPUTE]:
+        if node_type in [NodeType.REDUCE_SCATTER, NodeType.COMPUTE, NodeType.RS_WAIT]:
             # we do not reorder reduce scatter and compute node
             if node not in result_list and node not in all_gather_list:
                 result_list.append(node)
@@ -44,31 +40,54 @@ def reorder_all_gather(
             # gather i-th all gather node and its dependencies
             all_gather_list.append(node)
             inverse_user = list(inverse_users[node])
-            if len(inverse_user) > 0:
-                all_gather_list.extend(inverse_user)
-        elif node_type == NodeType.WAIT:
             if (
-                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+                len(inverse_user) > 0
+                and not node_to_type[inverse_user[0]] == NodeType.ALL_GATHER
+                and inverse_user not in all_gather_list
+            ):
+                all_gather_list.extend(inverse_user)
+        elif node_type == NodeType.AG_WAIT:
+            if (
+                (
+                    (
+                        node_to_type[snodes[idx + 1]] == NodeType.AG_WAIT
+                        and node_to_type[snodes[idx + 2]] == NodeType.ALL_GATHER
+                    )
+                    or (
+                        node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+                        and node_to_type[snodes[idx - 1]] != NodeType.AG_WAIT
+                    )
+                )
                 and not all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
                 # move i-th all gather node and its dependencies after (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
-            # add wait node
+
             result_list.append(node)
+
             if (
-                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+                (
+                    (
+                        node_to_type[snodes[idx - 1]] == NodeType.AG_WAIT
+                        and node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+                    )
+                    or (
+                        node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
+                        and node_to_type[snodes[idx - 1]] != NodeType.AG_WAIT
+                    )
+                )
                 and all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
                 # move i-th all gather node and its dependencies before (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
-
     if len(all_gather_list) > 0:
         result_list.extend(all_gather_list)
     result_list.reverse()
+
     return result_list
 
 
@@ -82,20 +101,22 @@ def reorder_reduce_scatter(
     result_list: List[scheduler.BaseSchedulerNode] = []
     wait_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
-
-    inverse_users, node_users = comms.compute_node_users(snodes)
-
+    inverse_users, node_users = compute_bucket_users(snodes)
+    types = []
     for node in snodes:
         node_to_type[node] = get_node_type(node)
+        types.append(get_node_type(node))
 
     for idx, node in enumerate(snodes):
         node_type = node_to_type[node]
-        if node_type in [NodeType.ALL_GATHER, NodeType.COMPUTE]:
-            # we do not reorder all gather and compute node
-            if node not in wait_list:
+        if node_type in [NodeType.ALL_GATHER, NodeType.COMPUTE, NodeType.AG_WAIT]:
+            if node not in result_list and node not in wait_list:
                 result_list.append(node)
-        elif node_type == NodeType.WAIT:
-            if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER:
+        elif node_type == NodeType.RS_WAIT:
+            if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER or (
+                node_to_type[snodes[idx - 2]] == NodeType.REDUCE_SCATTER
+                and node_to_type[snodes[idx - 1]] == NodeType.RS_WAIT
+            ):
                 # gather wait node after reduce scatter
                 wait_list.append(node)
                 wait_list.extend(node_users[node])
@@ -113,24 +134,3 @@ def reorder_reduce_scatter(
     if len(wait_list) > 0:
         result_list.extend(wait_list)
     return result_list
-
-
-def get_node_type(node) -> int:
-    if isinstance(node, scheduler.FusedSchedulerNode):
-        return NodeType.COMPUTE
-
-    if isinstance(node.node, ir._WaitKernel):
-        return NodeType.WAIT
-    elif isinstance(node.node, ir._CollectiveKernel):
-        if (
-            node.node.op_overload
-            == torch.ops._c10d_functional.all_gather_into_tensor.default
-        ):
-            return NodeType.ALL_GATHER
-        elif (
-            node.node.op_overload
-            == torch.ops._c10d_functional.reduce_scatter_tensor.default
-        ):
-            return NodeType.REDUCE_SCATTER
-
-    return NodeType.COMPUTE

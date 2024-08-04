@@ -92,7 +92,7 @@ from .utils import (
     sympy_product,
     sympy_subs,
 )
-from .virtualized import ops, OpsValue, V
+from .virtualized import NullHandler, ops, OpsValue, V
 
 
 if TYPE_CHECKING:
@@ -4448,7 +4448,106 @@ class ExternKernel(InputsKernel):
         Optional[Dict[sympy.Symbol, pytree.KeyPath]],
     ]:
         binded_args = {"args": args, "kwargs": kwargs}
+        args_flat, args_spec = pytree.tree_flatten(binded_args)
 
+        is_arg_tensor = []
+        tensor_args = []
+        non_tensor_args: List[Any] = []
+        for arg in args_flat:
+            is_arg_tensor.append(isinstance(arg, IRNode))
+            if is_arg_tensor[-1]:
+                tensor_args.append(arg)
+            else:
+                if isinstance(arg, sympy.Expr):
+                    arg = V.graph.sizevars.shape_env.create_symintnode(arg, hint=None)
+                #if isinstance(arg, FakeTensor):
+                #    tensor_args.append(arg)
+                non_tensor_args.append(arg)
+
+        def unflatten_args(new_tensor_args, new_non_tensor_args):
+            
+            result = []
+            it_tensors = iter(new_tensor_args)
+            it_non_tensors = iter(new_non_tensor_args)
+            for is_tensor in is_arg_tensor:
+                if is_tensor:
+                    result.append(next(it_tensors))
+                else:
+                    result.append(next(it_non_tensors))
+            r = pytree.tree_unflatten(result, args_spec)
+            return r.get("args", []), r.get("kwargs", {})
+
+        tensor_args_new = []
+        for x in tensor_args:
+            tensor_args_new.append(cls.realize_input(x))
+        tensor_args = tensor_args_new
+        # freeze layout otherwise our output stride calculation might
+        # become incorrect
+        for x in tensor_args:
+            if is_storage_and_layout(x):
+                as_storage_and_layout(x, freeze=True)
+
+        # Rerun fake tensor propagation, because Inductor may have changed the
+        # strides of inputs and we need to determine accurately what the
+        # output stride will be.
+        example_args: List[Union[torch.Tensor, torch._C.ScriptObject]] = []
+
+        # We need to retain the constant values of fake tensors that we originally
+        # propagated the graph with, because for some operators running without a
+        # constant would trigger an error / DataDependentException
+        for x in tensor_args:
+            if x.get_name() in V.graph.constants:
+                example_args.append(V.graph.constants[x.get_name()])
+            elif x.get_name() in V.graph.torchbind_constants:
+                example_args.append(V.graph.torchbind_constants[x.get_name()])
+            else:
+                example_args.append(ir_node_to_tensor(x, guard_shape=True))
+ 
+        new_args, new_kwargs = unflatten_args(example_args, non_tensor_args)
+      
+        example_output = kernel(*new_args, **new_kwargs)
+        unbacked_bindings: Optional[Dict[sympy.Symbol, pytree.KeyPath]] = None
+        if not isinstance(V.current_node, NullHandler):
+            if shape_env := V.fake_mode.shape_env: 
+                rebind_unbacked(shape_env, V.current_node, example_output)
+                unbacked_bindings = compute_unbacked_bindings(
+                    shape_env, example_output, V.current_node.meta.get("val")
+                )
+
+        example_out_li = (
+            [example_output]
+            if not isinstance(example_output, (list, tuple))
+            else example_output
+        )
+        for t in example_out_li:
+            if isinstance(t, torch.Tensor) and t.is_sparse:
+                msg = "sparsity not handled. Please file issue for sparse inference weights."
+                if not isinstance(V.current_node, NullHandler):
+                    if stack_trace := V.graph.current_node.meta.get("stack_trace", None):
+                        msg = f"{msg} Found from : \n {stack_trace}"
+                V.graph.disable_cudagraphs_reason = msg
+
+        return (
+            example_output,
+            tensor_args,
+            non_tensor_args,
+            unflatten_args,
+            unbacked_bindings,
+        )
+
+
+
+    @classmethod
+    def process_kernel_coalesced(
+        cls, kernel, *args, **kwargs
+    ) -> Tuple[
+        Any,
+        List[Any],
+        List[Any],
+        Callable[[Any, Any], Any],
+        Optional[Dict[sympy.Symbol, pytree.KeyPath]],
+    ]:
+        binded_args = {"args": args, "kwargs": kwargs}
         args_flat, args_spec = pytree.tree_flatten(binded_args)
 
         is_arg_tensor = []
@@ -4476,7 +4575,6 @@ class ExternKernel(InputsKernel):
             return r.get("args", []), r.get("kwargs", {})
 
         tensor_args = [cls.realize_input(x) for x in tensor_args]
-
         # freeze layout otherwise our output stride calculation might
         # become incorrect
         for x in tensor_args:
@@ -4505,10 +4603,12 @@ class ExternKernel(InputsKernel):
                 example_args.append(ir_node_to_tensor(x, guard_shape=True))
 
         new_args, new_kwargs = unflatten_args(example_args, non_tensor_args)
-        example_output = kernel(*new_args, **new_kwargs)
+       
 
+        example_output = kernel(*new_args, **new_kwargs)
         unbacked_bindings: Optional[Dict[sympy.Symbol, pytree.KeyPath]] = None
-        if shape_env := V.fake_mode.shape_env:
+        coalesced = True
+        if shape_env := V.fake_mode.shape_env and not coalesced: 
             rebind_unbacked(shape_env, V.current_node, example_output)
             unbacked_bindings = compute_unbacked_bindings(
                 shape_env, example_output, V.current_node.meta.get("val")
@@ -5949,12 +6049,116 @@ class FallbackKernel(ExternKernelAlloc):
             )
         else:
             self.codegen_comment(wrapper)
+            if (
+                self.op_overload == torch.ops.fsdp.split_with_sizes_copy.default
+                or self.op_overload == torch.ops.fsdp.read_out.default
+            ):
+                for buf in self.inputs[1:]:
+                    V.graph.wrapper_code.codegen_allocation(
+                        buf, force_alloc=True
+                    )
+            if self.op_overload == torch.ops.fsdp.chunk_cat.default:
+                for buf in self.inputs:
+                    V.graph.wrapper_code.codegen_allocation(
+                        buf, force_alloc=True
+                    )
             args = [*self.codegen_args(), *self.codegen_kwargs()]
             V.graph.wrapper_code.generate_fallback_kernel(self, args)
             if isinstance(self.layout, Layout):
                 self.codegen_size_asserts(wrapper)
 
         self.codegen_unbacked_symbol_defs(wrapper)
+
+    @classmethod
+    def process_kernel_seperate(
+        cls, kernel, *args, **kwargs
+    ) -> Tuple[
+        Any,
+        List[Any],
+        List[Any],
+        Callable[[Any, Any], Any],
+        Optional[Dict[sympy.Symbol, pytree.KeyPath]],
+    ]:
+        binded_args = {"args": args, "kwargs": kwargs}
+
+        args_flat, args_spec = pytree.tree_flatten(binded_args)
+
+        is_arg_tensor = []
+        tensor_args = []
+        non_tensor_args: List[Any] = []
+        for arg in args_flat:
+            is_arg_tensor.append(isinstance(arg, IRNode))
+            if is_arg_tensor[-1]:
+                tensor_args.append(arg)
+            else:
+                if isinstance(arg, sympy.Expr):
+                    arg = V.graph.sizevars.shape_env.create_symintnode(arg, hint=None)
+                non_tensor_args.append(arg)
+
+        def unflatten_args(new_tensor_args, new_non_tensor_args):
+            result = []
+            it_tensors = iter(new_tensor_args)
+            it_non_tensors = iter(new_non_tensor_args)
+            for is_tensor in is_arg_tensor:
+                if is_tensor:
+                    result.append(next(it_tensors))
+                else:
+                    result.append(next(it_non_tensors))
+            r = pytree.tree_unflatten(result, args_spec)
+            return r.get("args", []), r.get("kwargs", {})
+
+        tensor_args_new = []
+        for x in tensor_args:
+            tensor_args_new.append(TensorBox(StorageBox(x)))
+        tensor_args = tensor_args_new
+        for x in tensor_args:
+            if is_storage_and_layout(x):
+                as_storage_and_layout(x, freeze=True)
+
+        # Rerun fake tensor propagation, because Inductor may have changed the
+        # strides of inputs and we need to determine accurately what the
+        # output stride will be.
+        example_args: List[Union[torch.Tensor, torch._C.ScriptObject]] = []
+
+        # We need to retain the constant values of fake tensors that we originally
+        # propagated the graph with, because for some operators running without a
+        # constant would trigger an error / DataDependentException
+        for x in tensor_args:
+            if x.get_name() in V.graph.constants:
+                example_args.append(V.graph.constants[x.get_name()])
+            elif x.get_name() in V.graph.torchbind_constants:
+                example_args.append(V.graph.torchbind_constants[x.get_name()])
+            else:
+                example_args.append(ir_node_to_tensor(x, guard_shape=True))
+
+        new_args, new_kwargs = unflatten_args(example_args, non_tensor_args)
+        example_output = kernel(*new_args, **new_kwargs)
+        unbacked_bindings: Optional[Dict[sympy.Symbol, pytree.KeyPath]] = None
+        if not isinstance(V.current_node, NullHandler):
+            if shape_env := V.fake_mode.shape_env: 
+                rebind_unbacked(shape_env, V.current_node, example_output)
+                unbacked_bindings = compute_unbacked_bindings(
+                    shape_env, example_output, V.current_node.meta.get("val")
+                )
+        example_out_li = (
+            [example_output]
+            if not isinstance(example_output, (list, tuple))
+            else example_output
+        )
+        for t in example_out_li:
+            if isinstance(t, torch.Tensor) and t.is_sparse:
+                msg = "sparsity not handled. Please file issue for sparse inference weights."
+                if not isinstance(V.current_node, NullHandler):
+                    if stack_trace := V.graph.current_node.meta.get("stack_trace", None):
+                        msg = f"{msg} Found from : \n {stack_trace}"
+                V.graph.disable_cudagraphs_reason = msg
+        return (
+            example_output,
+            tensor_args,
+            non_tensor_args,
+            unflatten_args,
+            unbacked_bindings,
+        )
 
     @staticmethod
     def tensor_to_layout(output: torch.Tensor):
@@ -5972,13 +6176,28 @@ class FallbackKernel(ExternKernelAlloc):
             V.graph.fake_mode if kernel not in fake_incorrect_kernels else nullcontext()  # type: ignore[assignment]
         )
         with context:
-            (
-                example_output,
-                tensor_args,
-                non_tensor_args,
-                unflatten_args,
-                unbacked_bindings,
-            ) = cls.process_kernel(kernel, *args, **kwargs)
+       
+            if (
+                kernel == torch.ops.fsdp.all_gather_copy_in.default
+                or kernel == torch.ops.fsdp.split_with_sizes_copy.default
+                or kernel == torch.ops.fsdp.chunk_cat.default
+                or kernel == torch.ops.fsdp.read_out.default
+            ):
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = cls.process_kernel_seperate(kernel, *args, **kwargs)
+            else:
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = cls.process_kernel(kernel, *args, **kwargs)
 
         device = cls.find_device(tensor_args, example_output)
         if example_output is None:
@@ -6001,6 +6220,12 @@ class FallbackKernel(ExternKernelAlloc):
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
+
+        if (
+            kernel == torch.ops.fsdp.split_with_sizes_copy.default
+            or kernel == torch.ops.fsdp.read_out.default
+        ):
+            return packed
 
         def generate_output(output, indices):
             if isinstance(output, (list, tuple)):
@@ -7044,14 +7269,40 @@ class _CollectiveKernel(FallbackKernel):
         cpp_kernel_name = kernel._name
         python_kernel_name = cpp_kernel_name.replace("::", ".")
         with V.graph.fake_mode:
-            (
-                example_output,
-                tensor_args,
-                non_tensor_args,
-                unflatten_args,
-                unbacked_bindings,
-            ) = cls.process_kernel(kernel, inputs, *args, **kwargs)
-        assert not unbacked_bindings, f"{kernel}, {unbacked_bindings}"
+            if isinstance(inputs, MultiOutput) and isinstance(
+                inputs.inputs[0], FallbackKernel
+            ):
+                if (
+                    inputs.inputs[0].op_overload
+                    == torch.ops.fsdp.all_gather_copy_in.default
+                    or inputs.inputs[0].op_overload == torch.ops.fsdp.chunk_cat.default
+                ):
+                    (
+                        example_output,
+                        tensor_args,
+                        non_tensor_args,
+                        unflatten_args,
+                        unbacked_bindings,
+                    ) = cls.process_kernel_seperate(kernel, inputs, *args, **kwargs)
+            elif (
+                isinstance(inputs, FallbackKernel)
+                and inputs.op_overload == torch.ops.fsdp.chunk_cat.default
+            ):
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = cls.process_kernel_seperate(kernel, inputs, *args, **kwargs)
+            else:
+                (
+                    example_output,
+                    tensor_args,
+                    non_tensor_args,
+                    unflatten_args,
+                    unbacked_bindings,
+                ) = cls.process_kernel(kernel, inputs, *args, **kwargs)
         for tensor_arg in tensor_args:
             tensor_arg.realize()
 
@@ -7132,7 +7383,7 @@ class _WaitKernel(_CollectiveKernel):
         packed.mutation_outputs.append(
             MutationOutput(NoneLayout(inp.get_device()), inp, packed)
         )
-
+        return packed
     def get_read_writes(self):
         read_writes = super().get_read_writes()
         # See [Out-of-Place Collective Safety].
