@@ -1805,7 +1805,7 @@ class WrapperCodeGen(CodeGen):
             )
         )
 
-    def codegen_allocation(self, buffer: ir.Buffer):
+    def codegen_allocation(self, buffer: ir.Buffer, force_alloc=False):
         name = buffer.get_name()
 
         if name in V.graph.removed_buffers or name in self.allocated:
@@ -1813,9 +1813,7 @@ class WrapperCodeGen(CodeGen):
         self.allocated.add(name)
 
         if force_alloc:
-            #print(f"here11: force alloc: {buffer.get_name()}")
             self.writeline(AllocateLine(self, buffer))
-            #print("AllocateLine(self, buffer)", self.writeline(AllocateLine(self, buffer)))
             return
 
         if isinstance(

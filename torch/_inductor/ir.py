@@ -92,7 +92,7 @@ from .utils import (
     sympy_product,
     sympy_subs,
 )
-from .virtualized import ops, OpsValue, V
+from .virtualized import NullHandler, ops, OpsValue, V
 
 
 if TYPE_CHECKING:
@@ -4448,9 +4448,6 @@ class ExternKernel(InputsKernel):
         Optional[Dict[sympy.Symbol, pytree.KeyPath]],
     ]:
         binded_args = {"args": args, "kwargs": kwargs}
-<<<<<<< HEAD
-
-=======
         args_flat, args_spec = pytree.tree_flatten(binded_args)
 
         is_arg_tensor = []
@@ -4551,7 +4548,6 @@ class ExternKernel(InputsKernel):
         Optional[Dict[sympy.Symbol, pytree.KeyPath]],
     ]:
         binded_args = {"args": args, "kwargs": kwargs}
->>>>>>> 047a518156 (enable bucketing)
         args_flat, args_spec = pytree.tree_flatten(binded_args)
 
         is_arg_tensor = []
@@ -4579,10 +4575,6 @@ class ExternKernel(InputsKernel):
             return r.get("args", []), r.get("kwargs", {})
 
         tensor_args = [cls.realize_input(x) for x in tensor_args]
-<<<<<<< HEAD
-
-=======
->>>>>>> 047a518156 (enable bucketing)
         # freeze layout otherwise our output stride calculation might
         # become incorrect
         for x in tensor_args:
@@ -4611,19 +4603,12 @@ class ExternKernel(InputsKernel):
                 example_args.append(ir_node_to_tensor(x, guard_shape=True))
 
         new_args, new_kwargs = unflatten_args(example_args, non_tensor_args)
-<<<<<<< HEAD
-        example_output = kernel(*new_args, **new_kwargs)
-
-        unbacked_bindings: Optional[Dict[sympy.Symbol, pytree.KeyPath]] = None
-        if shape_env := V.fake_mode.shape_env:
-=======
        
 
         example_output = kernel(*new_args, **new_kwargs)
         unbacked_bindings: Optional[Dict[sympy.Symbol, pytree.KeyPath]] = None
         coalesced = True
         if shape_env := V.fake_mode.shape_env and not coalesced: 
->>>>>>> 047a518156 (enable bucketing)
             rebind_unbacked(shape_env, V.current_node, example_output)
             unbacked_bindings = compute_unbacked_bindings(
                 shape_env, example_output, V.current_node.meta.get("val")
@@ -6064,12 +6049,19 @@ class FallbackKernel(ExternKernelAlloc):
             )
         else:
             self.codegen_comment(wrapper)
-            if self.op_overload == torch.ops.fsdp.split_with_sizes_copy.default:
+            if (
+                self.op_overload == torch.ops.fsdp.split_with_sizes_copy.default
+                or self.op_overload == torch.ops.fsdp.read_out.default
+            ):
                 for buf in self.inputs[1:]:
-                    V.graph.wrapper_code.codegen_allocation(buf, flag=True, force_alloc=True)
+                    V.graph.wrapper_code.codegen_allocation(
+                        buf, force_alloc=True
+                    )
             if self.op_overload == torch.ops.fsdp.chunk_cat.default:
                 for buf in self.inputs:
-                    V.graph.wrapper_code.codegen_allocation(buf, flag=True, force_alloc=True)
+                    V.graph.wrapper_code.codegen_allocation(
+                        buf, force_alloc=True
+                    )
             args = [*self.codegen_args(), *self.codegen_kwargs()]
             V.graph.wrapper_code.generate_fallback_kernel(self, args)
             if isinstance(self.layout, Layout):
@@ -6185,7 +6177,12 @@ class FallbackKernel(ExternKernelAlloc):
         )
         with context:
        
-            if kernel == torch.ops.fsdp.all_gather_copy_in.default or kernel == torch.ops.fsdp.split_with_sizes_copy.default or kernel == torch.ops.fsdp.chunk_cat.default:
+            if (
+                kernel == torch.ops.fsdp.all_gather_copy_in.default
+                or kernel == torch.ops.fsdp.split_with_sizes_copy.default
+                or kernel == torch.ops.fsdp.chunk_cat.default
+                or kernel == torch.ops.fsdp.read_out.default
+            ):
                 (
                     example_output,
                     tensor_args,
@@ -6201,7 +6198,7 @@ class FallbackKernel(ExternKernelAlloc):
                     unflatten_args,
                     unbacked_bindings,
                 ) = cls.process_kernel(kernel, *args, **kwargs)
-         
+
         device = cls.find_device(tensor_args, example_output)
         if example_output is None:
             packed = cls(
@@ -6224,7 +6221,10 @@ class FallbackKernel(ExternKernelAlloc):
                 unbacked_bindings=unbacked_bindings,
             )
 
-        if kernel == torch.ops.fsdp.split_with_sizes_copy.default or kernel == torch.ops.fsdp.chunk_cat.default:
+        if (
+            kernel == torch.ops.fsdp.split_with_sizes_copy.default
+            or kernel == torch.ops.fsdp.read_out.default
+        ):
             return packed
 
         def generate_output(output, indices):
@@ -7269,18 +7269,14 @@ class _CollectiveKernel(FallbackKernel):
         cpp_kernel_name = kernel._name
         python_kernel_name = cpp_kernel_name.replace("::", ".")
         with V.graph.fake_mode:
-<<<<<<< HEAD
-            (
-                example_output,
-                tensor_args,
-                non_tensor_args,
-                unflatten_args,
-                unbacked_bindings,
-            ) = cls.process_kernel(kernel, inputs, *args, **kwargs)
-        assert not unbacked_bindings, f"{kernel}, {unbacked_bindings}"
-=======
-            if isinstance(inputs, MultiOutput):
-                if inputs.inputs[0].op_overload==torch.ops.fsdp.all_gather_copy_in.default:
+            if isinstance(inputs, MultiOutput) and isinstance(
+                inputs.inputs[0], FallbackKernel
+            ):
+                if (
+                    inputs.inputs[0].op_overload
+                    == torch.ops.fsdp.all_gather_copy_in.default
+                    or inputs.inputs[0].op_overload == torch.ops.fsdp.chunk_cat.default
+                ):
                     (
                         example_output,
                         tensor_args,
@@ -7288,7 +7284,10 @@ class _CollectiveKernel(FallbackKernel):
                         unflatten_args,
                         unbacked_bindings,
                     ) = cls.process_kernel_seperate(kernel, inputs, *args, **kwargs)
-            elif isinstance(inputs, FallbackKernel) and inputs.op_overload == torch.ops.fsdp.chunk_cat.default:
+            elif (
+                isinstance(inputs, FallbackKernel)
+                and inputs.op_overload == torch.ops.fsdp.chunk_cat.default
+            ):
                 (
                     example_output,
                     tensor_args,
@@ -7304,7 +7303,6 @@ class _CollectiveKernel(FallbackKernel):
                     unflatten_args,
                     unbacked_bindings,
                 ) = cls.process_kernel(kernel, inputs, *args, **kwargs)
->>>>>>> 1613e4bbbf (enable bucketing)
         for tensor_arg in tensor_args:
             tensor_arg.realize()
 
@@ -7385,7 +7383,7 @@ class _WaitKernel(_CollectiveKernel):
         packed.mutation_outputs.append(
             MutationOutput(NoneLayout(inp.get_device()), inp, packed)
         )
-
+        return packed
     def get_read_writes(self):
         read_writes = super().get_read_writes()
         # See [Out-of-Place Collective Safety].
