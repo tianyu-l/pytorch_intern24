@@ -1596,6 +1596,19 @@ class Scheduler:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
 
+        if config.simplefsdp.enable_reorder:
+            if self.post_grad_graph_id == 0:
+                # reorder forward graph
+                self.nodes = fsdp_reorder.reorder_all_gather(
+                    self.nodes, all_gather_before_last_wait=True
+                )
+            elif self.post_grad_graph_id == 1:
+                # reorder backward graph
+                self.nodes = fsdp_reorder.reorder_all_gather(
+                    self.nodes, all_gather_before_last_wait=False
+                )
+                self.nodes = fsdp_reorder.reorder_reduce_scatter(self.nodes, front_node)
+        
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:
             self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)
