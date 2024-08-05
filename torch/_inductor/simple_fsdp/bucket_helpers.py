@@ -1,16 +1,15 @@
 import math
-from enum import IntEnum
-from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import List, Tuple, Union
 
 import torch
 import torch.distributed as dist
-from .. import dependencies, ir, scheduler
+
+from .. import ir, scheduler
 from ..virtualized import V
 
+
 def create_scheduler_node_from_ir_node(
-    sched: "scheduler.Scheduler",
-    node: ir.Operation
+    sched: "scheduler.Scheduler", node: ir.Operation
 ) -> "scheduler.BaseSchedulerNode":
     """
     Create a scheduler node from an IR node & setup dependencies
@@ -22,11 +21,11 @@ def create_scheduler_node_from_ir_node(
     sched.name_to_fused_node[snode.get_name()] = snode
     return snode
 
-    
+
 def merge_allgather(
     sched: "scheduler.Scheduler",
-    nodes: List["scheduler.BaseSchedulerNode"], 
-    dep_nodes: List["scheduler.BaseSchedulerNode"]
+    nodes: List["scheduler.BaseSchedulerNode"],
+    dep_nodes: List["scheduler.BaseSchedulerNode"],
 ) -> List["scheduler.BaseSchedulerNode"]:
     """
     Bucket small ALL_GATHER nodes into one big all_gather node
@@ -39,7 +38,7 @@ def merge_allgather(
     copy_in_inputs = []
     for dep in dep_nodes:
         copy_in_inputs.append(dep.node)
-       
+
     # create all_gather copy_in's nodes
     inp_split_flatten = [math.prod(cbuf.get_layout().size) for cbuf in copy_in_inputs]
     inp_split_sizes = inp_split_flatten
@@ -68,16 +67,17 @@ def merge_allgather(
         copy_in_output,
         nodes[0].node.constant_args[0],
         nodes[0].node.constant_args[1],
-    ) 
+    )
     ag_snode = create_scheduler_node_from_ir_node(sched, ag_node)
     aggregated_nodes = [ag_snode, copy_in_output_snode, copy_in_snode] + dep_nodes
     return aggregated_nodes
+
 
 def merge_ag_wait(
     sched: "scheduler.Scheduler",
     original_wait_list: List["scheduler.BaseSchedulerNode"],
     original_all_gather_list: List["scheduler.BaseSchedulerNode"],
-    agg_node: ir.Operation
+    agg_node: ir.Operation,
 ) -> List["scheduler.BaseSchedulerNode"]:
     """
     Bucket small AG_WAIT nodes into one big AG_WAIT node
@@ -109,13 +109,15 @@ def merge_ag_wait(
 
 def merge_reducescatter(
     sched: "scheduler.Scheduler",
-    nodes: List["scheduler.BaseSchedulerNode"], 
-    dep_nodes: List["scheduler.BaseSchedulerNode"], 
+    nodes: List["scheduler.BaseSchedulerNode"],
+    dep_nodes: List["scheduler.BaseSchedulerNode"],
 ) -> Tuple[List["scheduler.BaseSchedulerNode"], List[Union[List[int], List[int]]]]:
     """
     Bucket small REDUCE_SCATTER nodes into one big REDUCE_SCATTER node
     """
-    dep_nodes = [r for r in dep_nodes if not isinstance(r, scheduler.FusedSchedulerNode)]
+    dep_nodes = [
+        r for r in dep_nodes if not isinstance(r, scheduler.FusedSchedulerNode)
+    ]
     if len(nodes) == 1:
         return (dep_nodes + nodes, [])
 
@@ -138,8 +140,10 @@ def merge_reducescatter(
         simplefsdp=True,
     )
     copy_in_snode = create_scheduler_node_from_ir_node(sched, V.graph.operations[-2])
-    copy_in_output_snode = create_scheduler_node_from_ir_node(sched, V.graph.operations[-1])
-    
+    copy_in_output_snode = create_scheduler_node_from_ir_node(
+        sched, V.graph.operations[-1]
+    )
+
     # create reduce_scatter's node
     rs_node = ir._CollectiveKernel.create_out_of_place(
         torch.ops._c10d_functional.reduce_scatter_tensor.default,
@@ -147,7 +151,7 @@ def merge_reducescatter(
         nodes[0].node.constant_args[0],
         nodes[0].node.constant_args[1],
         nodes[0].node.constant_args[2],
-    )   
+    )
     rs_snode = create_scheduler_node_from_ir_node(sched, rs_node)
     aggregated_nodes = dep_nodes + [copy_in_snode, copy_in_output_snode, rs_snode]
     return (aggregated_nodes, copy_in_size)
