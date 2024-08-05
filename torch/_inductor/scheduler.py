@@ -45,7 +45,7 @@ from .comm_analysis import estimate_nccl_collective_runtime
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .ir import ComputedBuffer, MultiOutput, MultiOutputLayout
 from .runtime.runtime_utils import green_text, red_text
-from .simple_fsdp import fsdp_reorder
+from .simple_fsdp import fsdp_bucket, fsdp_reorder
 from .sizevars import SimplifyIndexing
 from .utils import (
     cache_on_self,
@@ -169,9 +169,9 @@ class BaseSchedulerNode:
         # .min_order = .max_order = X if this node is X-th node in `self.scheduler.nodes`.
         self.min_order: int
         self.max_order: int
-        self.last_usage: OrderedSet[
-            str
-        ] = OrderedSet()  # buffers that won't be used after this kernel
+        self.last_usage: OrderedSet[str] = (
+            OrderedSet()
+        )  # buffers that won't be used after this kernel
         self.written = False
 
         self.outputs: List[SchedulerBuffer] = [
@@ -448,9 +448,9 @@ class BaseSchedulerNode:
                         # update last usage of reused node
                         self.last_usage.discard(input_buf.get_name())
 
-                        V.kernel.inplace_update_buffers[
-                            buf.get_name()
-                        ] = input_buf.get_name()
+                        V.kernel.inplace_update_buffers[buf.get_name()] = (
+                            input_buf.get_name()
+                        )
                         break
 
     def codegen_originating_info(
@@ -1596,6 +1596,19 @@ class Scheduler:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
 
+        if self.post_grad_graph_id == 1:
+            front_node = fsdp_reorder.get_front_node(self.nodes)
+
+        if config.simplefsdp.enable_bucket:
+            # bucket all gather
+            self.nodes = fsdp_bucket.bucket_all_gather_by_block(self, self.nodes)
+
+            if self.post_grad_graph_id == 1:
+                # bucket reduce scatter
+                self.nodes = fsdp_bucket.bucket_reduce_scatter_by_block(
+                    self, self.nodes
+                )
+
         if config.simplefsdp.enable_reorder:
             if self.post_grad_graph_id == 0:
                 # reorder forward graph
@@ -1608,7 +1621,7 @@ class Scheduler:
                     self.nodes, all_gather_before_last_wait=False
                 )
                 self.nodes = fsdp_reorder.reorder_reduce_scatter(self.nodes, front_node)
-        
+
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:
             self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)
@@ -1859,9 +1872,9 @@ class Scheduler:
                 for alt_name in buf.get_mutations():
                     self.mutation_renames[rename(alt_name)] = buf.get_name()
                     self.mutation_renames[alt_name] = buf.get_name()
-                    self.mutation_real_name[
-                        buf.get_name()
-                    ] = self.mutation_real_name.get(alt_name, alt_name)
+                    self.mutation_real_name[buf.get_name()] = (
+                        self.mutation_real_name.get(alt_name, alt_name)
+                    )
 
         # make sure outputs aren't dead-code-eliminated
         for buf_name in V.graph.get_output_names():
@@ -2435,9 +2448,9 @@ class Scheduler:
             rhs_dep = node2_name2dep[buf_name]
 
             if lhs_dep.get_numel() != rhs_dep.get_numel():
-                reasons[
-                    buf_name
-                ] = f"different numel: {lhs_dep.get_numel()} v.s. {rhs_dep.get_numel()}"
+                reasons[buf_name] = (
+                    f"different numel: {lhs_dep.get_numel()} v.s. {rhs_dep.get_numel()}"
+                )
                 continue
 
             # same numel but different MemoryDep.size. Should be broadcasting
@@ -2446,9 +2459,9 @@ class Scheduler:
                 continue
 
             if not isinstance(lhs_dep, MemoryDep) or not isinstance(rhs_dep, MemoryDep):
-                reasons[
-                    buf_name
-                ] = f"not MemoryDep: {type(lhs_dep)} v.s. {type(rhs_dep)}"
+                reasons[buf_name] = (
+                    f"not MemoryDep: {type(lhs_dep)} v.s. {type(rhs_dep)}"
+                )
                 continue
 
             lhs_off = lhs_dep.get_offset()
@@ -2468,9 +2481,9 @@ class Scheduler:
                 continue
 
             # Add more rules here
-            reasons[
-                buf_name
-            ] = f"Unknown reason: {lhs_dep} v.s. {rhs_dep}. Layout: {buf.layout}"
+            reasons[buf_name] = (
+                f"Unknown reason: {lhs_dep} v.s. {rhs_dep}. Layout: {buf.layout}"
+            )
 
         return str(reasons)
 
