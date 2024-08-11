@@ -187,11 +187,11 @@ def chunk_cat(
         _get_dim0_padded_size(grad.size(), world_size) for grad in tensors
     )
     reduce_scatter_input_numel = sum(s.numel() for s in padded_unsharded_sizes)
-    out1 = torch.empty((reduce_scatter_input_numel,), dtype=reduce_dtype, device=device)
-    out1 = out1.view(world_size, -1)
-    out1 = torch._chunk_cat(tensors, dim, num_chunks)
+    out = torch.empty((reduce_scatter_input_numel,), dtype=reduce_dtype, device=device)
+    out = out.view(world_size, -1)
+    out = torch._chunk_cat(tensors, dim, num_chunks)
 
-    return out1
+    return out
 
 
 @torch.no_grad()
