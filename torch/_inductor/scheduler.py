@@ -45,7 +45,7 @@ from .comm_analysis import estimate_nccl_collective_runtime
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .ir import ComputedBuffer, MultiOutput, MultiOutputLayout
 from .runtime.runtime_utils import green_text, red_text
-from .simple_fsdp import reorder
+from .simple_fsdp import reorder, transformer_block_bucket
 from .sizevars import SimplifyIndexing
 from .utils import (
     cache_on_self,
@@ -1596,17 +1596,32 @@ class Scheduler:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
 
-        if self.post_grad_graph_id == 0:
-            # reorder forward graph
-            self.nodes = reorder.reorder_all_gather(
-                self.nodes, all_gather_before_last_wait=True
+        if config.simplefsdp.enable_bucket:
+            # get the first compute node w/o AG in backward graph
+            front_node = reorder.get_front_node(self.nodes)
+            # bucket all gather
+            self.nodes = transformer_block_bucket.bucket_all_gather_by_block(
+                self, self.nodes
             )
-        elif self.post_grad_graph_id == 1:
-            # reorder backward graph
-            self.nodes = reorder.reorder_all_gather(
-                self.nodes, all_gather_before_last_wait=False
-            )
-            self.nodes = reorder.reorder_reduce_scatter(self.nodes)
+
+            if self.post_grad_graph_id == 1:
+                # bucket reduce scatter
+                self.nodes = transformer_block_bucket.bucket_reduce_scatter_by_block(
+                    self, self.nodes
+                )
+
+        if config.simplefsdp.enable_reorder:
+            if self.post_grad_graph_id == 0:
+                # reorder forward graph
+                self.nodes = reorder.reorder_all_gather(
+                    self.nodes, all_gather_before_last_wait=True
+                )
+            elif self.post_grad_graph_id == 1:
+                # reorder backward graph
+                self.nodes = reorder.reorder_all_gather(
+                    self.nodes, all_gather_before_last_wait=False
+                )
+                self.nodes = reorder.reorder_reduce_scatter(self.nodes, front_node)
 
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:
