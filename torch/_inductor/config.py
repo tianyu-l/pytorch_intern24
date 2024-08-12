@@ -1030,6 +1030,7 @@ class halide:
     # Halide autoschedulers struggle with these kernels
     scan_kernels = False
 
+
 # create a directory containing lots of debug information
 class trace:
     # master switch for all debugging flags below

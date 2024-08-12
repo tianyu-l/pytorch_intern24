@@ -7077,16 +7077,15 @@ class _CollectiveKernel(FallbackKernel):
         cpp_kernel_name = kernel._name
         python_kernel_name = cpp_kernel_name.replace("::", ".")
         with V.graph.fake_mode:
-            if isinstance(inputs, MultiOutput) and isinstance(
-                inputs.inputs[0], FallbackKernel
-            ):
-                if (
-                    inputs.inputs[0].op_overload
-                    == torch.ops.fsdp.all_gather_copy_in.default
-                    or inputs.inputs[0].op_overload == torch.ops.fsdp.chunk_cat.default
-                ):
-                    process_kernel_seperate = True
-            elif (
+            if (
+                isinstance(inputs, MultiOutput)
+                and isinstance(inputs.inputs[0], FallbackKernel)
+                and inputs.inputs[0].op_overload
+                in [
+                    torch.ops.fsdp.all_gather_copy_in.default,
+                    torch.ops.fsdp.chunk_cat.default,
+                ]
+            ) or (
                 isinstance(inputs, FallbackKernel)
                 and inputs.op_overload == torch.ops.fsdp.chunk_cat.default
             ):
