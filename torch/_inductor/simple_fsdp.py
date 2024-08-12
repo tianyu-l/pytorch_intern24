@@ -1,11 +1,12 @@
 # mypy: allow-untyped-defs
 # pyre-strict
+from collections import defaultdict
 from enum import IntEnum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 
-from . import comms, ir, scheduler
+from . import ir, scheduler
 
 
 class NodeType(IntEnum):
@@ -13,6 +14,46 @@ class NodeType(IntEnum):
     WAIT = 1
     COMPUTE = 2
     REDUCE_SCATTER = 3
+
+
+def compute_node_users(
+    snodes: List["scheduler.BaseSchedulerNode"],
+) -> Tuple[
+    Dict["scheduler.BaseSchedulerNode", Set["scheduler.BaseSchedulerNode"]],
+    Dict["scheduler.BaseSchedulerNode", Set["scheduler.BaseSchedulerNode"]],
+]:
+    # set up buffer name to (fused)snode mapping
+    buf_to_snode: Dict[str, scheduler.BaseSchedulerNode] = {}
+    for node in snodes:
+        if isinstance(node, scheduler.FusedSchedulerNode):
+            for x in node.snodes:
+                for buf in x.get_outputs():
+                    buf_to_snode[buf.get_name()] = node
+
+        for buf in node.get_outputs():
+            buf_to_snode[buf.get_name()] = node
+    # compute inverse_users
+    inverse_users = {}
+    keys = list(buf_to_snode.keys())
+    for node in snodes:
+        dep_list = []
+        for dep in node.unmet_dependencies:
+            if dep.name in keys:
+                dep_list.append(buf_to_snode[dep.name])
+        inverse_users.update({node: set(dep_list)})
+
+    # compute node_users
+    # TODO: ideally, we should deduplicate .users and .node_users,
+    # but currently .users contains extra information that's difficult to
+    # extract into a standalone container.
+    node_users: Dict[scheduler.BaseSchedulerNode, Set[scheduler.BaseSchedulerNode]] = (
+        defaultdict(set)
+    )
+    for node, node_inverse_users in inverse_users.items():
+        for inverse_user in node_inverse_users:
+            node_users[inverse_user].add(node)
+
+    return inverse_users, node_users
 
 
 def reorder_all_gather(
@@ -28,7 +69,7 @@ def reorder_all_gather(
     all_gather_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
 
-    inverse_users, node_users = comms.compute_node_users(snodes)
+    inverse_users, node_users = compute_node_users(snodes)
     snodes.reverse()
 
     for node in snodes:
@@ -83,7 +124,7 @@ def reorder_reduce_scatter(
     wait_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
 
-    inverse_users, node_users = comms.compute_node_users(snodes)
+    inverse_users, node_users = compute_node_users(snodes)
 
     for node in snodes:
         node_to_type[node] = get_node_type(node)

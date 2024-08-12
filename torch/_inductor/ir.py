@@ -92,7 +92,7 @@ from .utils import (
     sympy_product,
     sympy_subs,
 )
-from .virtualized import ops, OpsValue, V
+from .virtualized import NullHandler, ops, OpsValue, V
 
 
 if TYPE_CHECKING:
@@ -260,13 +260,11 @@ def get_stride_order(seq: Sequence[Union[int, torch.SymInt, Expr]]) -> Sequence[
 
 
 @overload
-def ir_node_to_tensor(x: Literal[None], guard_shape: bool = True) -> None:
-    ...
+def ir_node_to_tensor(x: Literal[None], guard_shape: bool = True) -> None: ...
 
 
 @overload
-def ir_node_to_tensor(x: IRNode, guard_shape: bool = True) -> torch.Tensor:
-    ...
+def ir_node_to_tensor(x: IRNode, guard_shape: bool = True) -> torch.Tensor: ...
 
 
 def ir_node_to_tensor(
@@ -1099,9 +1097,7 @@ class Reduction(Loops):
                 return (
                     bool(val)
                     if dst_dtype == torch.bool
-                    else float(val)
-                    if dst_dtype.is_floating_point
-                    else int(val)
+                    else float(val) if dst_dtype.is_floating_point else int(val)
                 )
 
             rtypes_to_inits = {
@@ -3628,9 +3624,11 @@ class ComputedBuffer(OperationBuffer):
             )
             reads = self.get_read_writes().reads
             reads_bufs = [
-                V.graph.name_to_buffer[r.name]
-                if r.name in V.graph.name_to_buffer.keys()
-                else None
+                (
+                    V.graph.name_to_buffer[r.name]
+                    if r.name in V.graph.name_to_buffer.keys()
+                    else None
+                )
                 for r in reads
             ]
             # only consider reads to buffer of same size
@@ -4438,17 +4436,15 @@ class ExternKernel(InputsKernel):
         return pw
 
     @classmethod
-    def process_kernel(
-        cls, kernel, *args, **kwargs
-    ) -> Tuple[
+    def process_kernel(cls, kernel, *args, **kwargs) -> Tuple[
         Any,
         List[Any],
         List[Any],
         Callable[[Any, Any], Any],
         Optional[Dict[sympy.Symbol, pytree.KeyPath]],
     ]:
+        process_kernel_seperate = kwargs.pop("process_kernel_seperate", False)
         binded_args = {"args": args, "kwargs": kwargs}
-
         args_flat, args_spec = pytree.tree_flatten(binded_args)
 
         is_arg_tensor = []
@@ -4461,9 +4457,12 @@ class ExternKernel(InputsKernel):
             else:
                 if isinstance(arg, sympy.Expr):
                     arg = V.graph.sizevars.shape_env.create_symintnode(arg, hint=None)
+                # if isinstance(arg, FakeTensor):
+                #    tensor_args.append(arg)
                 non_tensor_args.append(arg)
 
         def unflatten_args(new_tensor_args, new_non_tensor_args):
+
             result = []
             it_tensors = iter(new_tensor_args)
             it_non_tensors = iter(new_non_tensor_args)
@@ -4475,8 +4474,13 @@ class ExternKernel(InputsKernel):
             r = pytree.tree_unflatten(result, args_spec)
             return r.get("args", []), r.get("kwargs", {})
 
-        tensor_args = [cls.realize_input(x) for x in tensor_args]
-
+        tensor_args_new = []
+        for x in tensor_args:
+            if process_kernel_seperate:
+                tensor_args_new.append(TensorBox(StorageBox(x)))
+            else:
+                tensor_args_new.append(cls.realize_input(x))
+        tensor_args = tensor_args_new
         # freeze layout otherwise our output stride calculation might
         # become incorrect
         for x in tensor_args:
@@ -4492,27 +4496,23 @@ class ExternKernel(InputsKernel):
         # propagated the graph with, because for some operators running without a
         # constant would trigger an error / DataDependentException
         for x in tensor_args:
-            # if x is a view of a constant, we need to realize the view
-            # (we can't pass the constant into the kernel directly)
-            if not isinstance(x, BaseView) and x.get_name() in V.graph.constants:
+            if x.get_name() in V.graph.constants:
                 example_args.append(V.graph.constants[x.get_name()])
-            elif (
-                not isinstance(x, BaseView)
-                and x.get_name() in V.graph.torchbind_constants
-            ):
+            elif x.get_name() in V.graph.torchbind_constants:
                 example_args.append(V.graph.torchbind_constants[x.get_name()])
             else:
                 example_args.append(ir_node_to_tensor(x, guard_shape=True))
 
         new_args, new_kwargs = unflatten_args(example_args, non_tensor_args)
-        example_output = kernel(*new_args, **new_kwargs)
 
+        example_output = kernel(*new_args, **new_kwargs)
         unbacked_bindings: Optional[Dict[sympy.Symbol, pytree.KeyPath]] = None
-        if shape_env := V.fake_mode.shape_env:
-            rebind_unbacked(shape_env, V.current_node, example_output)
-            unbacked_bindings = compute_unbacked_bindings(
-                shape_env, example_output, V.current_node.meta.get("val")
-            )
+        if not isinstance(V.current_node, NullHandler):
+            if shape_env := V.fake_mode.shape_env:
+                rebind_unbacked(shape_env, V.current_node, example_output)
+                unbacked_bindings = compute_unbacked_bindings(
+                    shape_env, example_output, V.current_node.meta.get("val")
+                )
 
         example_out_li = (
             [example_output]
@@ -4522,8 +4522,11 @@ class ExternKernel(InputsKernel):
         for t in example_out_li:
             if isinstance(t, torch.Tensor) and t.is_sparse:
                 msg = "sparsity not handled. Please file issue for sparse inference weights."
-                if stack_trace := V.graph.current_node.meta.get("stack_trace", None):
-                    msg = f"{msg} Found from : \n {stack_trace}"
+                if not isinstance(V.current_node, NullHandler):
+                    if stack_trace := V.graph.current_node.meta.get(
+                        "stack_trace", None
+                    ):
+                        msg = f"{msg} Found from : \n {stack_trace}"
                 V.graph.disable_cudagraphs_reason = msg
 
         return (
@@ -4667,11 +4670,13 @@ class ExternKernel(InputsKernel):
                     x,
                     freeze=True,
                     want_contiguous=False,
-                    stride_order=get_stride_order(
-                        V.graph.sizevars.size_hints(x.get_layout().stride)
-                    )
-                    if is_stride_order_storage_and_layout(x, order)
-                    else order,
+                    stride_order=(
+                        get_stride_order(
+                            V.graph.sizevars.size_hints(x.get_layout().stride)
+                        )
+                        if is_stride_order_storage_and_layout(x, order)
+                        else order
+                    ),
                     allow_padding=allow_padding,
                 )
                 return x
@@ -4954,9 +4959,11 @@ class RandomSeeds(ExternKernelOut):
             # FIXME: Ideally we should only use at::_ops::randint_low_out::call here,
             # but the signature is different from is at::randint_out. Again,
             # we can simplify the code when only keeping an ABI-compatible version.
-            cpp_kernel_name="at::_ops::randint_low_out::call"
-            if config.abi_compatible
-            else "at::randint_out",
+            cpp_kernel_name=(
+                "at::_ops::randint_low_out::call"
+                if config.abi_compatible
+                else "at::randint_out"
+            ),
             op_overload=aten.randint.low_out,
         )
 
@@ -5949,6 +5956,15 @@ class FallbackKernel(ExternKernelAlloc):
             )
         else:
             self.codegen_comment(wrapper)
+            if (
+                self.op_overload == torch.ops.fsdp.split_with_sizes_copy.default
+                or self.op_overload == torch.ops.fsdp.read_out.default
+            ):
+                for buf in self.inputs[1:]:
+                    V.graph.wrapper_code.codegen_allocation(buf, force_alloc=True)
+            if self.op_overload == torch.ops.fsdp.chunk_cat.default:
+                for buf in self.inputs:
+                    V.graph.wrapper_code.codegen_allocation(buf, force_alloc=True)
             args = [*self.codegen_args(), *self.codegen_kwargs()]
             V.graph.wrapper_code.generate_fallback_kernel(self, args)
             if isinstance(self.layout, Layout):
@@ -5972,13 +5988,26 @@ class FallbackKernel(ExternKernelAlloc):
             V.graph.fake_mode if kernel not in fake_incorrect_kernels else nullcontext()  # type: ignore[assignment]
         )
         with context:
+
+            if (
+                kernel == torch.ops.fsdp.all_gather_copy_in.default
+                or kernel == torch.ops.fsdp.split_with_sizes_copy.default
+                or kernel == torch.ops.fsdp.chunk_cat.default
+                or kernel == torch.ops.fsdp.read_out.default
+            ):
+                process_kernel_seperate = True
+            else:
+                process_kernel_seperate = False
+
             (
                 example_output,
                 tensor_args,
                 non_tensor_args,
                 unflatten_args,
                 unbacked_bindings,
-            ) = cls.process_kernel(kernel, *args, **kwargs)
+            ) = cls.process_kernel(
+                kernel, *args, **kwargs, process_kernel_seperate=process_kernel_seperate
+            )
 
         device = cls.find_device(tensor_args, example_output)
         if example_output is None:
@@ -6001,6 +6030,12 @@ class FallbackKernel(ExternKernelAlloc):
                 unflatten_args,
                 unbacked_bindings=unbacked_bindings,
             )
+
+        if (
+            kernel == torch.ops.fsdp.split_with_sizes_copy.default
+            or kernel == torch.ops.fsdp.read_out.default
+        ):
+            return packed
 
         def generate_output(output, indices):
             if isinstance(output, (list, tuple)):
@@ -7044,14 +7079,36 @@ class _CollectiveKernel(FallbackKernel):
         cpp_kernel_name = kernel._name
         python_kernel_name = cpp_kernel_name.replace("::", ".")
         with V.graph.fake_mode:
+            if (
+                isinstance(inputs, MultiOutput)
+                and isinstance(inputs.inputs[0], FallbackKernel)
+                and inputs.inputs[0].op_overload
+                in [
+                    torch.ops.fsdp.all_gather_copy_in.default,
+                    torch.ops.fsdp.chunk_cat.default,
+                ]
+            ) or (
+                isinstance(inputs, FallbackKernel)
+                and inputs.op_overload == torch.ops.fsdp.chunk_cat.default
+            ):
+                process_kernel_seperate = True
+            else:
+                process_kernel_seperate = False
+
             (
                 example_output,
                 tensor_args,
                 non_tensor_args,
                 unflatten_args,
                 unbacked_bindings,
-            ) = cls.process_kernel(kernel, inputs, *args, **kwargs)
-        assert not unbacked_bindings, f"{kernel}, {unbacked_bindings}"
+            ) = cls.process_kernel(
+                kernel,
+                inputs,
+                *args,
+                **kwargs,
+                process_kernel_seperate=process_kernel_seperate,
+            )
+
         for tensor_arg in tensor_args:
             tensor_arg.realize()
 
@@ -7132,6 +7189,7 @@ class _WaitKernel(_CollectiveKernel):
         packed.mutation_outputs.append(
             MutationOutput(NoneLayout(inp.get_device()), inp, packed)
         )
+        return packed
 
     def get_read_writes(self):
         read_writes = super().get_read_writes()
