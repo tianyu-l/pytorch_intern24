@@ -167,9 +167,8 @@ def read_out(
 
 
 lib.define(
-    "chunk_cat(Tensor[] tensors, int dim, int num_chunks, bool simplefsdp=False) -> Tensor"
+    "chunk_cat(Tensor[] tensors, int dim, int num_chunks, *, Tensor(a!) out=None, bool simplefsdp=False) -> Tensor"
 )
-
 
 @torch.library.impl(lib, "chunk_cat", "Meta")
 @torch.library.impl(lib, "chunk_cat", "CUDA")
@@ -178,20 +177,26 @@ def chunk_cat(
     tensors: List[torch.Tensor],
     dim: int,
     num_chunks: int,
+    out: torch.Tensor = None,
     simplefsdp: bool = False,
 ) -> torch.Tensor:
-    world_size = dist.get_world_size()
-    device = tensors[0].device
-    reduce_dtype = torch.bfloat16
-    padded_unsharded_sizes = tuple(
-        _get_dim0_padded_size(grad.size(), world_size) for grad in tensors
-    )
-    reduce_scatter_input_numel = sum(s.numel() for s in padded_unsharded_sizes)
-    out = torch.empty((reduce_scatter_input_numel,), dtype=reduce_dtype, device=device)
-    out = out.view(world_size, -1)
-    out = torch._chunk_cat(tensors, dim, num_chunks)
+    if simplefsdp:
+        world_size = dist.get_world_size()
+        device = tensors[0].device
+        reduce_dtype = torch.bfloat16
+        padded_unsharded_sizes = tuple(
+            _get_dim0_padded_size(grad.size(), world_size) for grad in tensors
+        )
+        reduce_scatter_input_numel = sum(s.numel() for s in padded_unsharded_sizes)
+        chunk_cat_out = torch.empty(
+            (reduce_scatter_input_numel,), dtype=reduce_dtype, device=device
+        )
+        chunk_cat_out = chunk_cat_out.view(world_size, -1)
+        chunk_cat_out = torch._chunk_cat(tensors, dim, num_chunks)
 
-    return out
+        return chunk_cat_out
+    else:
+        torch._chunk_cat(tensors, dim, num_chunks, out=out)
 
 
 @torch.no_grad()
