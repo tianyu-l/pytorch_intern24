@@ -1030,14 +1030,6 @@ class halide:
     # Halide autoschedulers struggle with these kernels
     scan_kernels = False
 
-# configurations for simple fsdp
-class simplefsdp:
-    # enable bucketing or not in simple fsdp
-    enable_bucket = True
-
-    # enable reordering or not in simple fsdp
-    enable_reorder = True
-
 # create a directory containing lots of debug information
 class trace:
     # master switch for all debugging flags below
