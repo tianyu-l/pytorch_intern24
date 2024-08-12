@@ -38,14 +38,13 @@ from torch.utils._ordered_set import OrderedSet
 from torch.utils._sympy.symbol import free_symbol_is_type, SymT
 from torch.utils._triton import has_triton
 
-from . import comms, config, dependencies, ir, metrics
+from . import comms, config, dependencies, ir, metrics, simple_fsdp
 from .codecache import write_text
 from .codegen.common import BackendFeature, get_scheduling_for_device, Kernel
 from .comm_analysis import estimate_nccl_collective_runtime
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .ir import ComputedBuffer, MultiOutput, MultiOutputLayout
 from .runtime.runtime_utils import green_text, red_text
-from .simple_fsdp import fsdp_reorder
 from .sizevars import SimplifyIndexing
 from .utils import (
     cache_on_self,
@@ -1595,6 +1594,14 @@ class Scheduler:
         if config._pre_fusion_custom_pass is not None:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
+
+        if self.post_grad_graph_id == 0:
+            # reorder forward graph
+            self.nodes = simple_fsdp.reorder_all_gather(self.nodes, all_gather_before_last_wait=True)
+        elif self.post_grad_graph_id == 1:
+            # reorder backward graph
+            self.nodes = simple_fsdp.reorder_all_gather(self.nodes, all_gather_before_last_wait=False)
+            self.nodes = simple_fsdp.reorder_reduce_scatter(self.nodes)
 
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:
