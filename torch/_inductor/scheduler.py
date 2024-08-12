@@ -1596,6 +1596,7 @@ class Scheduler:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
 
+        front_node = None
         if config.simplefsdp.enable_bucket:
             # get the first compute node w/o AG in backward graph
             front_node = reorder.get_front_node(self.nodes)
