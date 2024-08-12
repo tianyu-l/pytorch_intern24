@@ -1805,12 +1805,17 @@ class WrapperCodeGen(CodeGen):
             )
         )
 
-    def codegen_allocation(self, buffer: ir.Buffer):
+    def codegen_allocation(self, buffer: ir.Buffer, force_alloc=False):
         name = buffer.get_name()
 
         if name in V.graph.removed_buffers or name in self.allocated:
             return
         self.allocated.add(name)
+
+        if force_alloc:
+            self.writeline(AllocateLine(self, buffer))
+            return
+
         if isinstance(
             buffer.get_defining_op(),
             (ir.ExternKernelAlloc, ir.MultiOutput),
