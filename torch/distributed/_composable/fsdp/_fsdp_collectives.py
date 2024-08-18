@@ -116,13 +116,9 @@ def split_with_sizes_copy(
         all_gather_input_split_sizes = [
             a // world_size for a in all_gather_input_split_sizes
         ]
-        torch.split_with_sizes_copy(
-            all_gather_output, all_gather_input_split_sizes, dim=dim, out=out
-        )
-    else:
-        torch.split_with_sizes_copy(
-            all_gather_output, all_gather_input_split_sizes, dim=dim, out=out
-        )
+    torch.split_with_sizes_copy(
+        all_gather_output, all_gather_input_split_sizes, dim=dim, out=out
+    )
 
 
 lib.define(
@@ -189,12 +185,7 @@ def chunk_cat(
             _get_dim0_padded_size(grad.size(), world_size) for grad in tensors
         )
         reduce_scatter_input_numel = sum(s.numel() for s in padded_unsharded_sizes)
-        chunk_cat_out = torch.empty(
-            (reduce_scatter_input_numel,), dtype=reduce_dtype, device=device
-        )
-        chunk_cat_out = chunk_cat_out.view(world_size, -1)
         chunk_cat_out = torch._chunk_cat(tensors, dim, num_chunks)
-
         return chunk_cat_out
     else:
         torch._chunk_cat(tensors, dim, num_chunks, out=out)
