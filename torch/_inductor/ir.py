@@ -4457,12 +4457,9 @@ class ExternKernel(InputsKernel):
             else:
                 if isinstance(arg, sympy.Expr):
                     arg = V.graph.sizevars.shape_env.create_symintnode(arg, hint=None)
-                # if isinstance(arg, FakeTensor):
-                #    tensor_args.append(arg)
                 non_tensor_args.append(arg)
 
         def unflatten_args(new_tensor_args, new_non_tensor_args):
-
             result = []
             it_tensors = iter(new_tensor_args)
             it_non_tensors = iter(new_non_tensor_args)
@@ -4474,13 +4471,10 @@ class ExternKernel(InputsKernel):
             r = pytree.tree_unflatten(result, args_spec)
             return r.get("args", []), r.get("kwargs", {})
 
-        tensor_args_new = []
-        for x in tensor_args:
-            if process_kernel_seperate:
-                tensor_args_new.append(TensorBox(StorageBox(x)))
-            else:
-                tensor_args_new.append(cls.realize_input(x))
-        tensor_args = tensor_args_new
+        if process_kernel_seperate:
+            tensor_args = [TensorBox(StorageBox(x)) for x in tensor_args]
+        else:
+            tensor_args = [cls.realize_input(x) for x in tensor_args]
         # freeze layout otherwise our output stride calculation might
         # become incorrect
         for x in tensor_args:
