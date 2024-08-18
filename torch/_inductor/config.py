@@ -1032,8 +1032,8 @@ class halide:
 
 
 class simplefsdp:
-    enable_bucket = True
-    enable_reorder = True
+    enable_bucket = False
+    enable_reorder = False
 
 
 # create a directory containing lots of debug information
