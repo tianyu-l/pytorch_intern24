@@ -444,6 +444,8 @@ class DTensor(torch.Tensor):  # pyre-ignore[13]: pyre is bad at __new__
         placements: Optional[Sequence[Placement]] = None,
         *,
         async_op: bool = False,
+        forward_dtype: Optional[torch.dtype] = None,
+        backward_dtype: Optional[torch.dtype] = None,
     ) -> "DTensor":
         """
         `redistribute` performs necessary collective operations that redistribute the current
@@ -490,7 +492,9 @@ class DTensor(torch.Tensor):  # pyre-ignore[13]: pyre is bad at __new__
         placements = tuple(placements)
 
         # pyre-fixme[16]: `Redistribute` has no attribute `apply`.
-        return Redistribute.apply(self, device_mesh, placements, async_op)
+        return Redistribute.apply(
+            self, device_mesh, placements, async_op, forward_dtype, backward_dtype
+        )
 
     def full_tensor(
         self, *, grad_placements: Optional[Sequence[Placement]] = None
