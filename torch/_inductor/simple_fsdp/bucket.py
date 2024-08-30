@@ -25,17 +25,16 @@ def create_scheduler_node_from_ir_node(
 def merge_allgather(
     sched: "scheduler.Scheduler",
     nodes: List["scheduler.BaseSchedulerNode"],
-    dep_nodes: List["scheduler.BaseSchedulerNode"],
 ) -> List["scheduler.BaseSchedulerNode"]:
     """
     Bucket small ALL_GATHER nodes into one big all_gather node
     """
     if len(nodes) == 1:
-        return dep_nodes + nodes
+        return nodes
 
     copy_in_inputs = []
-    for dep in dep_nodes:
-        copy_in_inputs.append(dep.node)
+    for node in nodes:
+        copy_in_inputs.append(node.node.inputs[0])
 
     # create all_gather copy_in's nodes
     inp_split_flatten = [math.prod(cbuf.get_layout().size) for cbuf in copy_in_inputs]
@@ -67,7 +66,7 @@ def merge_allgather(
         nodes[0].node.constant_args[1],
     )
     ag_snode = create_scheduler_node_from_ir_node(sched, ag_node)
-    aggregated_nodes = dep_nodes + [copy_in_snode, copy_in_output_snode, ag_snode]
+    aggregated_nodes = [copy_in_snode, copy_in_output_snode, ag_snode]
     return aggregated_nodes
 
 
@@ -106,23 +105,19 @@ def merge_ag_wait(
 def merge_reducescatter(
     sched: "scheduler.Scheduler",
     nodes: List["scheduler.BaseSchedulerNode"],
-    dep_nodes: List["scheduler.BaseSchedulerNode"],
 ) -> Tuple[List["scheduler.BaseSchedulerNode"], List[Union[List[int], List[int]]]]:
     """
     Bucket small REDUCE_SCATTER nodes into one big REDUCE_SCATTER node
     """
-    dep_nodes = [
-        r for r in dep_nodes if not isinstance(r, scheduler.FusedSchedulerNode)
-    ]
     if len(nodes) == 1:
-        return (dep_nodes + nodes, [])
+        return (nodes, [])
 
     # create reduce_scatter copy_in's node
     copy_in_inputs = []
     size = []
     split = [0]
-    for dep in dep_nodes:
-        copy_in_inputs.append(dep.node)
+    for dep in nodes:
+        copy_in_inputs.append(dep.node.inputs[0])
         layout_size = dep.node.get_layout().size
         split.append(split[-1] + len(layout_size))
         size.extend(layout_size)
@@ -149,14 +144,14 @@ def merge_reducescatter(
         nodes[0].node.constant_args[2],
     )
     rs_snode = create_scheduler_node_from_ir_node(sched, rs_node)
-    aggregated_nodes = dep_nodes + [copy_in_snode, copy_in_output_snode, rs_snode]
+    aggregated_nodes = [copy_in_snode, copy_in_output_snode, rs_snode]
     return (aggregated_nodes, copy_in_size)
 
 
 def merge_rs_wait(
     sched: "scheduler.Scheduler",
     original_wait_list: List["scheduler.BaseSchedulerNode"],
-    wait_dep_list: List["scheduler.BaseSchedulerNode"],
+    original_reduce_scatter_list: List["scheduler.BaseSchedulerNode"],
     rs_node: ir.Operation,
     copy_in_size: List[Union[List[int], List[int]]],
 ) -> List["scheduler.BaseSchedulerNode"]:
@@ -164,7 +159,7 @@ def merge_rs_wait(
     Bucket small RS_WAIT nodes into one big RS_WAIT node
     """
     if len(original_wait_list) == 1:
-        return original_wait_list + wait_dep_list
+        return original_wait_list
 
     # create rs_wait's node
     wait_node = ir._WaitKernel.create_wait(
@@ -180,7 +175,7 @@ def merge_rs_wait(
         size=copy_in_size[0],
         split=copy_in_size[1],
         dim=1,
-        out=[n.node for n in wait_dep_list],
+        out=[n.node for n in original_reduce_scatter_list],
     )
     copy_out = create_scheduler_node_from_ir_node(sched, copy_out)
     return [wait_snode, copy_out]
