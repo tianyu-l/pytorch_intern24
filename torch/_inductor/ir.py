@@ -5956,7 +5956,8 @@ class FallbackKernel(ExternKernelAlloc):
             ):
                 for buf in self.inputs[1:]:
                     V.graph.wrapper_code.codegen_allocation(buf, force_alloc=True)
-            if (self.op_overload == torch.ops.fsdp.chunk_cat.default
+            if (
+                self.op_overload == torch.ops.fsdp.chunk_cat.default
                 or self.op_overload == torch.ops.fsdp.all_gather_copy_in.default
             ):
                 for buf in self.inputs:
@@ -5990,7 +5991,7 @@ class FallbackKernel(ExternKernelAlloc):
                 or kernel == torch.ops.fsdp.split_with_sizes_copy.default
                 or kernel == torch.ops.fsdp.chunk_cat.default
                 or kernel == torch.ops.fsdp.read_out.default
-            ):
+            ) and config.simplefsdp.enable_bucket:
                 process_kernel_seperate = True
             else:
                 process_kernel_seperate = False
@@ -7076,21 +7077,24 @@ class _CollectiveKernel(FallbackKernel):
         python_kernel_name = cpp_kernel_name.replace("::", ".")
         with V.graph.fake_mode:
             if (
-                isinstance(inputs, MultiOutput)
-                and isinstance(inputs.inputs[0], FallbackKernel)
-                and inputs.inputs[0].op_overload
-                in [
-                    torch.ops.fsdp.all_gather_copy_in.default,
-                    torch.ops.fsdp.chunk_cat.default,
-                ]
-            ) or (
-                isinstance(inputs, FallbackKernel)
-                and inputs.op_overload 
-                in [
-                    torch.ops.fsdp.all_gather_copy_in.default,
-                    torch.ops.fsdp.chunk_cat.default,
-                ]
-            ):
+                (
+                    isinstance(inputs, MultiOutput)
+                    and isinstance(inputs.inputs[0], FallbackKernel)
+                    and inputs.inputs[0].op_overload
+                    in [
+                        torch.ops.fsdp.all_gather_copy_in.default,
+                        torch.ops.fsdp.chunk_cat.default,
+                    ]
+                )
+                or (
+                    isinstance(inputs, FallbackKernel)
+                    and inputs.op_overload
+                    in [
+                        torch.ops.fsdp.all_gather_copy_in.default,
+                        torch.ops.fsdp.chunk_cat.default,
+                    ]
+                )
+            ) and config.simplefsdp.enable_bucket:
                 process_kernel_seperate = True
             else:
                 process_kernel_seperate = False
