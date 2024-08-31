@@ -107,6 +107,15 @@ def _get_dim0_chunked_size(
     return cast(torch.Size, torch.Size([0]) + unchunked_size[1:])
 
 
+def _get_dim0_simplefsdp_size(
+    chunk: torch.Tensor, unchunked_size: torch.Size
+) -> torch.Size:
+    if len(chunk.size()) == len(unchunked_size):
+        return chunk.size()
+    else:
+        return cast(torch.Size, unchunked_size[:-1] + torch.Size([chunk.size(0)]))
+
+
 def _from_local_no_grad(
     local_tensor: torch.Tensor,
     sharding_spec: DTensorSpec,
