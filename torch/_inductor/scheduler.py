@@ -1605,6 +1605,7 @@ class Scheduler:
                 self, self.nodes
             )
 
+            # TODO(ruisizhang123): determine fwd/bwd graph, other than using hardcode from self.post_grad_graph_id
             if self.post_grad_graph_id == 1:
                 # bucket reduce scatter
                 self.nodes = transformer_block_bucket.bucket_reduce_scatter_by_block(
