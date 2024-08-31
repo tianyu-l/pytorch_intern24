@@ -179,12 +179,8 @@ def chunk_cat(
 ) -> torch.Tensor:
     if simplefsdp:
         world_size = dist.get_world_size()
-        device = tensors[0].device
         reduce_dtype = torch.bfloat16
-        padded_unsharded_sizes = tuple(
-            _get_dim0_padded_size(grad.size(), world_size) for grad in tensors
-        )
-        reduce_scatter_input_numel = sum(s.numel() for s in padded_unsharded_sizes)
+        tensors = [t.type(reduce_dtype) for t in tensors]
         chunk_cat_out = torch._chunk_cat(tensors, dim, num_chunks)
         return chunk_cat_out
     else:
