@@ -4,11 +4,13 @@ from typing import List, NamedTuple, Optional, Tuple, Union
 import torch
 import torch._dynamo.compiled_autograd as ca
 import torch.distributed as dist
+from torch._prims_common import make_contiguous_strides_for
 from torch.distributed._tensor import DTensor
 from torch.distributed.distributed_c10d import ReduceOp
 
 from ._fsdp_common import (
     _get_dim0_padded_size,
+    _get_dim0_simplefsdp_size,
     _raise_assert_with_print,
     _to_dtype_if_needed,
 )
@@ -39,7 +41,8 @@ lib.define(
         SymInt world_size,
         SymInt rank,
         ScalarType dtype,
-        Device device
+        Device device,
+        bool simplefsdp=False
     ) -> (Tensor, Tensor)
     """
 )
@@ -54,6 +57,7 @@ def all_gather_copy_in_meta(
     rank: int,
     dtype: torch.dtype,
     device: torch.device,
+    simplefsdp: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     all_gather_output = torch.empty(
         (all_gather_input_numel * world_size,), dtype=dtype, device="meta"
@@ -74,6 +78,7 @@ def all_gather_copy_in_cuda(
     rank: int,
     dtype: torch.dtype,
     device: torch.device,
+    simplefsdp: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     all_gather_output = torch.empty(
         (all_gather_input_numel * world_size,), dtype=dtype, device=device
@@ -82,13 +87,15 @@ def all_gather_copy_in_cuda(
         0, all_gather_input_numel * rank, all_gather_input_numel
     )
     foreach_copy_dsts = torch.split(all_gather_input, inp_split_sizes)
+    if simplefsdp:
+        all_gather_inputs = [t.flatten() for t in all_gather_inputs]
     with torch.no_grad():
         torch._foreach_copy_(foreach_copy_dsts, all_gather_inputs)
     return all_gather_input, all_gather_output
 
 
 lib.define(
-    "split_with_sizes_copy(Tensor all_gather_output, SymInt[] all_gather_input_split_sizes, int dim=0, *, Tensor(a!)[] out) -> ()"
+    "split_with_sizes_copy(Tensor all_gather_output, SymInt[] all_gather_input_split_sizes, int dim, *, Tensor(a!)[] out, bool simplefsdp=False) -> ()"
 )
 
 
@@ -100,14 +107,63 @@ def split_with_sizes_copy(
     all_gather_input_split_sizes: List[int],
     dim: int,
     out: List[torch.Tensor],
+    simplefsdp: bool = False,
 ) -> None:
+    if simplefsdp:
+        world_size = dist.get_world_size()
+        out = [o.view(world_size, -1).type(all_gather_output.dtype) for o in out]
+        all_gather_output = all_gather_output.view(world_size, -1)
+        all_gather_input_split_sizes = [
+            a // world_size for a in all_gather_input_split_sizes
+        ]
     torch.split_with_sizes_copy(
         all_gather_output, all_gather_input_split_sizes, dim=dim, out=out
     )
 
 
 lib.define(
-    "chunk_cat(Tensor[] tensors, int dim, int num_chunks, *, Tensor(a!) out) -> ()"
+    "read_out(Tensor all_gather_output, int dim, SymInt[] size, SymInt[] split, Tensor[] out) -> ()"
+)
+
+
+@torch.library.impl(lib, "read_out", "Meta")
+@torch.library.impl(lib, "read_out", "CUDA")
+@torch.library.impl(lib, "read_out", "CPU")
+def read_out(
+    all_gather_output: torch.Tensor,
+    dim: int,
+    size: List[int],
+    split: List[int],
+    out: List[torch.Tensor],
+) -> None:
+    rank = dist.get_rank()
+    padded_size = [torch.Size(size[i:j]) for i, j in zip(split[:-1], split[1:])]
+    padded_size = tuple(
+        _get_dim0_simplefsdp_size(
+            out[idx], _get_dim0_padded_size(grad, dist.get_world_size())
+        )
+        for idx, grad in enumerate(padded_size)
+    )
+    flat_grad_offset = 0
+    reduce_dtype = torch.bfloat16
+    for idx in range(len(padded_size)):
+        sharded_size = padded_size[idx]
+        contiguous_sharded_stride = make_contiguous_strides_for(sharded_size)
+        new_sharded_grad = torch.as_strided(
+            all_gather_output,
+            size=sharded_size,
+            stride=contiguous_sharded_stride,
+            storage_offset=flat_grad_offset,
+        ).type(reduce_dtype)
+        if new_sharded_grad.size() != out[idx].size():
+            out[idx].copy_(new_sharded_grad[rank][0])
+        else:
+            out[idx].copy_(new_sharded_grad)
+        flat_grad_offset += new_sharded_grad.numel()
+
+
+lib.define(
+    "chunk_cat(Tensor[] tensors, int dim, int num_chunks, *, Tensor(a!) out=None, bool simplefsdp=False) -> Tensor"
 )
 
 
@@ -118,9 +174,17 @@ def chunk_cat(
     tensors: List[torch.Tensor],
     dim: int,
     num_chunks: int,
-    out: torch.Tensor,
-) -> None:
-    torch._chunk_cat(tensors, dim, num_chunks, out=out)
+    out: torch.Tensor = None,
+    simplefsdp: bool = False,
+) -> torch.Tensor:
+    if simplefsdp:
+        world_size = dist.get_world_size()
+        reduce_dtype = torch.bfloat16
+        tensors = [t.type(reduce_dtype) for t in tensors]
+        chunk_cat_out = torch._chunk_cat(tensors, dim, num_chunks)
+        return chunk_cat_out
+    else:
+        torch._chunk_cat(tensors, dim, num_chunks, out=out)
 
 
 @torch.no_grad()
