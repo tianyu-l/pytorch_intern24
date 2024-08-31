@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 from .. import scheduler
 from .utils import compute_node_users, get_node_type, NodeType
 
-
+# TODO(ruisizhang123): Group nodes using GroupedSchedulerNode
 def reorder_all_gather(
     snodes: List["scheduler.BaseSchedulerNode"],
     all_gather_before_last_wait: Optional[bool] = True,
