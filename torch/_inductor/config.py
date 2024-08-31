@@ -1031,6 +1031,11 @@ class halide:
     scan_kernels = False
 
 
+class simplefsdp:
+    enable_bucket = False
+    enable_reorder = False
+
+
 # create a directory containing lots of debug information
 class trace:
     # master switch for all debugging flags below
