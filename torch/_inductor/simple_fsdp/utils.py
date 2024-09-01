@@ -52,6 +52,37 @@ def compute_node_users(
 
     return inverse_users, node_users
 
+def get_buffer_type(buffer: "ir.Operation") -> NodeType:
+    """
+    Determine the type of a buffer
+    """
+    if isinstance(buffer, ir._WaitKernel):
+        # Determine if the wait node is waiting for ALL_GATHER or REDUCE_SCATTER
+        if (
+            buffer.inputs[0].op_overload
+            == torch.ops._c10d_functional.all_gather_into_tensor.default
+        ):
+            return NodeType.AG_WAIT
+        elif (
+            buffer.inputs[0].op_overload
+            == torch.ops._c10d_functional.reduce_scatter_tensor.default
+        ):
+            return NodeType.RS_WAIT
+    elif isinstance(buffer, ir._CollectiveKernel):
+        # Determine if the collective kernel is for ALL_GATHER or REDUCE_SCATTER
+        if (
+            buffer.op_overload
+            == torch.ops._c10d_functional.all_gather_into_tensor.default
+        ):
+            return NodeType.ALL_GATHER
+        elif (
+            buffer.op_overload
+            == torch.ops._c10d_functional.reduce_scatter_tensor.default
+        ):
+            return NodeType.REDUCE_SCATTER
+
+    return NodeType.COMPUTE
+
 
 def get_node_type(node: "scheduler.BaseSchedulerNode") -> NodeType:
     """
@@ -61,55 +92,15 @@ def get_node_type(node: "scheduler.BaseSchedulerNode") -> NodeType:
         # Only compute nodes are fused
         return NodeType.COMPUTE
 
-    if isinstance(node.node, ir._WaitKernel):
-        # Determine if the wait node is waiting for ALL_GATHER or REDUCE_SCATTER
-        if (
-            node.node.inputs[0].op_overload
-            == torch.ops._c10d_functional.all_gather_into_tensor.default
-        ):
-            return NodeType.AG_WAIT
-        elif (
-            node.node.inputs[0].op_overload
-            == torch.ops._c10d_functional.reduce_scatter_tensor.default
-        ):
-            return NodeType.RS_WAIT
-    elif isinstance(node.node, ir._CollectiveKernel):
-        # Determine if the collective kernel is for ALL_GATHER or REDUCE_SCATTER
-        if (
-            node.node.op_overload
-            == torch.ops._c10d_functional.all_gather_into_tensor.default
-        ):
-            return NodeType.ALL_GATHER
-        elif (
-            node.node.op_overload
-            == torch.ops._c10d_functional.reduce_scatter_tensor.default
-        ):
-            return NodeType.REDUCE_SCATTER
+    if isinstance(node, scheduler.GroupedSchedulerNode):
+        # [Only for bucketing]: newly created AG and RS are grouped as GroupedSchedulerNode
+        child_nodes_type = [get_buffer_type(n.node) for n in node.snodes]
 
-    elif isinstance(node.node, ir.FallbackKernel):
-        # [Only for bucketing]: The copy-in (all_gather_copy_in/chunk_cat) is associated with the newly created ALL_GATHER or REDUCE_SCATTER
-        # The copy-out (split_with_sizes_copy/read_out) is associated with the newly created AG_WAIT or RS_WAIT
-        if node.node.op_overload == torch.ops.fsdp.split_with_sizes_copy.default:
-            return NodeType.AG_WAIT
-        elif node.node.op_overload == torch.ops.fsdp.read_out.default:
-            return NodeType.RS_WAIT
-        elif node.node.op_overload == torch.ops.fsdp.all_gather_copy_in.default:
-            return NodeType.ALL_GATHER
-        elif node.node.op_overload == torch.ops.fsdp.chunk_cat.default:
-            return NodeType.REDUCE_SCATTER
+        if child_nodes_type[-1] in [NodeType.ALL_GATHER, NodeType.REDUCE_SCATTER]:
+            return child_nodes_type[-1]
+        elif child_nodes_type[0] in [NodeType.AG_WAIT, NodeType.RS_WAIT]:
+            return child_nodes_type[0]
+        else:
+            return NodeType.COMPUTE
 
-    elif isinstance(node.node, ir.MultiOutput):
-        # [Only for bucketing]: Determine if the MultiOutput is associated with the newly created ALL_GATHER or REDUCE_SCATTER
-        if (
-            isinstance(node.node.inputs[0], ir.FallbackKernel)
-            and node.node.inputs[0].op_overload
-            == torch.ops.fsdp.all_gather_copy_in.default
-        ):
-            return NodeType.ALL_GATHER
-        if (
-            isinstance(node.node.inputs[0], ir.FallbackKernel)
-            and node.node.inputs[0].op_overload == torch.ops.fsdp.chunk_cat.default
-        ):
-            return NodeType.REDUCE_SCATTER
-
-    return NodeType.COMPUTE
+    return get_buffer_type(node.node)

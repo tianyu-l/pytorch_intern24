@@ -1408,7 +1408,8 @@ class GroupedSchedulerNode(BaseSchedulerNode):
         """
         for snode in self.snodes:
             self.scheduler.name_to_fused_node[snode.get_name()] = snode
-        del self.scheduler.name_to_fused_node[self.get_name()]
+        if self.get_name() in self.scheduler.name_to_fused_node:
+            del self.scheduler.name_to_fused_node[self.get_name()]
         return self.scheduler.fuse_nodes(self.snodes)
 
     def add_fake_dep(self, fake_dep: Dep) -> None:

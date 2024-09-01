@@ -5,7 +5,6 @@ from typing import Dict, List, Optional
 from .. import scheduler
 from .utils import compute_node_users, get_node_type, NodeType
 
-# TODO(ruisizhang123): Group nodes using GroupedSchedulerNode
 def reorder_all_gather(
     snodes: List["scheduler.BaseSchedulerNode"],
     all_gather_before_last_wait: Optional[bool] = True,
@@ -34,24 +33,11 @@ def reorder_all_gather(
             # gather i-th all gather node and its dependencies
             all_gather_list.append(node)
             inverse_user = list(inverse_users[node])
-            if (
-                len(inverse_user) > 0
-                and not node_to_type[inverse_user[0]] == NodeType.ALL_GATHER
-                and inverse_user not in all_gather_list
-            ):
+            if len(inverse_user) > 0:
                 all_gather_list.extend(inverse_user)
         elif node_type == NodeType.AG_WAIT:
             if (
-                (
-                    (
-                        node_to_type[snodes[idx + 1]] == NodeType.AG_WAIT
-                        and node_to_type[snodes[idx + 2]] == NodeType.ALL_GATHER
-                    )
-                    or (
-                        node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
-                        and node_to_type[snodes[idx - 1]] != NodeType.AG_WAIT
-                    )
-                )
+                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
                 and not all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
@@ -62,16 +48,7 @@ def reorder_all_gather(
             result_list.append(node)
 
             if (
-                (
-                    (
-                        node_to_type[snodes[idx - 1]] == NodeType.AG_WAIT
-                        and node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
-                    )
-                    or (
-                        node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
-                        and node_to_type[snodes[idx - 1]] != NodeType.AG_WAIT
-                    )
-                )
+                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
                 and all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
@@ -108,10 +85,7 @@ def reorder_reduce_scatter(
             if node not in result_list and node not in wait_list:
                 result_list.append(node)
         elif node_type == NodeType.RS_WAIT:
-            if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER or (
-                node_to_type[snodes[idx - 2]] == NodeType.REDUCE_SCATTER
-                and node_to_type[snodes[idx - 1]] == NodeType.RS_WAIT
-            ):
+            if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER:
                 # gather wait node after reduce scatter
                 wait_list.append(node)
                 wait_list.extend(node_users[node])
@@ -131,22 +105,17 @@ def reorder_reduce_scatter(
 
     # minor adjust to ensure overlapping between FWD & BWD
     if front_node is not None:
-        pick_up_wait = []
+        picked_wait = None
         new_result_list = []
         picked = False
-        append = False
         for i in result_list:
             if not picked and get_node_type(i) == NodeType.AG_WAIT:
-                pick_up_wait.append(i)
-                if len(pick_up_wait) == 2:
-                    picked = True
+                picked_wait = i
+                picked = True
             else:
-                if i not in pick_up_wait:
-                    new_result_list.append(i)
-                if not append and picked and i == front_node:
-                    new_result_list.extend(pick_up_wait)
-                    append = True
-                if append and picked:
+                new_result_list.append(i)
+                if picked and i == front_node:
+                    new_result_list.append(picked_wait)
                     break
         result_list[: len(new_result_list)] = new_result_list
 
@@ -159,16 +128,9 @@ def get_front_node(
     """
     Get the front node used for hide BWD communication
     """
-    inverse_users, node_users = compute_node_users(snodes)
     front_node = snodes[0]
-    see_other_type = False
     for node in snodes:
-        if get_node_type(node) == NodeType.COMPUTE and not see_other_type:
-            users = [get_node_type(i) for i in list(node_users[node])]
-            if NodeType.REDUCE_SCATTER in users:
-                front_node = node
-                break
-        else:
-            see_other_type = True
+        if getattr(node.node, "python_kernel_name", "") == "extern_kernels.mm":
+            front_node = node
             break
     return front_node
