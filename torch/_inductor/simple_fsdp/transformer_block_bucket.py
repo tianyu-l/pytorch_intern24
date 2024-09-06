@@ -18,7 +18,7 @@ def bucket_all_gather_by_block(
     node_block_list = []
     last_module = ""
     for node in snodes:
-        if isinstance(node, scheduler.FusedSchedulerNode):
+        if isinstance(node, scheduler.FusedSchedulerNode) or isinstance(node, scheduler.GroupedSchedulerNode):
             node_module = get_block_level(node.snodes[0])
         else:
             node_module = get_block_level(node)
@@ -40,14 +40,14 @@ def bucket_all_gather_by_block(
         if current_module != last_module and len(all_gather_list) > 0:
             # bucketing in the block boundary
             assert len(all_gather_list) == len(ag_wait_list)
-            merged_all_gather = merge_allgather(
+            merged_all_gather, ag_ir_node = merge_allgather(
                 sched, all_gather_list
             )
             merged_wait = merge_ag_wait(
-                sched, ag_wait_list, all_gather_list, merged_all_gather[-1].node
+                sched, ag_wait_list, all_gather_list, ag_ir_node
             )
 
-            for n in all_gather_dep_list + merged_all_gather + merged_wait:
+            for n in all_gather_dep_list + [merged_all_gather, merged_wait]:
                 if n not in result_list:
                     result_list.append(n)
             compute_list = [i for i in compute_list if i not in all_gather_dep_list]
@@ -77,15 +77,15 @@ def bucket_all_gather_by_block(
     assert len(all_gather_list) == len(ag_wait_list)
 
     if len(all_gather_list) > 0:
-        merged_all_gather = merge_allgather(sched, all_gather_list)
+        merged_all_gather, ag_ir_node = merge_allgather(sched, all_gather_list)
         merged_wait = merge_ag_wait(
-            sched, ag_wait_list, all_gather_list, merged_all_gather[-1].node
+            sched, ag_wait_list, all_gather_list, ag_ir_node
         )
-        for n in all_gather_dep_list + merged_all_gather + merged_wait:
+        for n in all_gather_dep_list + [merged_all_gather, merged_wait]:
             if n not in result_list:
                 result_list.append(n)
-        compute_list = [i for i in compute_list if i not in all_gather_dep_list]
-        result_list.extend(compute_list)
+    compute_list = [i for i in compute_list if i not in all_gather_dep_list]
+    result_list.extend(compute_list)
 
     return result_list
 
@@ -103,7 +103,7 @@ def bucket_reduce_scatter_by_block(
     node_block_list = []
     last_module = ""
     for node in snodes:
-        if isinstance(node, scheduler.FusedSchedulerNode):
+        if isinstance(node, scheduler.FusedSchedulerNode) or isinstance(node, scheduler.GroupedSchedulerNode):
             node_module = get_block_level(node.snodes[0])
         else:
             node_module = get_block_level(node)
@@ -118,7 +118,6 @@ def bucket_reduce_scatter_by_block(
     reduce_scatter_list = []
     rs_wait_list = []
     rs_wait_dep_list = []
-    fused_list = []
     last_module = node_block_list[0]
 
     for idx, node in enumerate(snodes):
@@ -126,18 +125,18 @@ def bucket_reduce_scatter_by_block(
         if current_module != last_module and len(reduce_scatter_list) > 0:
             # bucketing in the block boundary
             assert len(reduce_scatter_list) == len(rs_wait_list)
-            (merged_reduce_scatter, copy_in_size) = merge_reducescatter(
+            (merged_reduce_scatter, rs_ir_node, copy_in_size) = merge_reducescatter(
                 sched, reduce_scatter_list
             )
             merged_wait = merge_rs_wait(
                 sched,
                 rs_wait_list,
                 reduce_scatter_list,
-                merged_reduce_scatter[-1].node,
+                rs_ir_node,
                 copy_in_size,
             )
 
-            for n in merged_reduce_scatter + merged_wait + rs_wait_dep_list:
+            for n in [merged_reduce_scatter, merged_wait] + rs_wait_dep_list:
                 if n not in result_list:
                     result_list.append(n)
 
@@ -166,21 +165,19 @@ def bucket_reduce_scatter_by_block(
     assert len(reduce_scatter_list) == len(rs_wait_list)
 
     if len(reduce_scatter_list) > 0:
-        (merged_reduce_scatter, copy_in_size) = merge_reducescatter(
+        (merged_reduce_scatter, rs_ir_node, copy_in_size) = merge_reducescatter(
             sched, reduce_scatter_list
         )
         merged_wait = merge_rs_wait(
             sched,
             rs_wait_list,
             reduce_scatter_list,
-            merged_reduce_scatter[-1].node,
+            rs_ir_node,
             copy_in_size,
         )
-        for n in merged_reduce_scatter + merged_wait + rs_wait_dep_list:
+        for n in [merged_reduce_scatter, merged_wait] + rs_wait_dep_list:
             if n not in result_list:
                 result_list.append(n)
-
-    result_list = [r for r in result_list if r not in fused_list]
 
     return result_list
 
@@ -224,7 +221,6 @@ def merge_block_name(
             node_block_list[i] = node_block_list[i - 1]
         if first_block == "":
             first_block = node_block_list[i]
-
     # make sure every node is annotated
     assert "" not in node_block_list
     return node_block_list
@@ -239,11 +235,18 @@ def get_block_level(node: "scheduler.BaseSchedulerNode") -> str:
     module_list = []
     for n in node_origin_list:
         module_stack = n.meta.get("nn_module_stack", {})
+        module_list_meta = list(module_stack.values())
         if module_stack != {}:
-            layer_info, block_info = list(module_stack.values())[0]
+            layer_info, block_info = module_list_meta[0]
+            if "_checkpoint_wrapped_module" in layer_info:
+                if len(module_list_meta) > 1:
+                    layer_info, block_info = module_list_meta[1]
+                    layer_info = layer_info.replace("_modules['_checkpoint_wrapped_module'].", "")
+                else:
+                    layer_info = ""
             module_list.append(layer_info)
-    node_module = list(set(module_list))
-    assert len(node_module) == 1 or len(node_module) == 0
-    if len(node_module) > 0:
-        return node_module[0]
+    
+    if len(module_list) > 0:
+        module_list.sort()
+        return max(module_list, key=module_list.count)
     return ""
