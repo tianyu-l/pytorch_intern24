@@ -52,31 +52,31 @@ def compute_node_users(
 
     return inverse_users, node_users
 
-def get_buffer_type(buffer: "ir.Operation") -> NodeType:
+def _get_ir_node_type(ir_node: "ir.Operation") -> NodeType:
     """
-    Determine the type of a buffer
+    Determine the type of a ir node
     """
-    if isinstance(buffer, ir._WaitKernel):
+    if isinstance(ir_node, ir._WaitKernel):
         # Determine if the wait node is waiting for ALL_GATHER or REDUCE_SCATTER
         if (
-            buffer.inputs[0].op_overload
+            ir_node.inputs[0].op_overload
             == torch.ops._c10d_functional.all_gather_into_tensor.default
         ):
             return NodeType.AG_WAIT
         elif (
-            buffer.inputs[0].op_overload
+            ir_node.inputs[0].op_overload
             == torch.ops._c10d_functional.reduce_scatter_tensor.default
         ):
             return NodeType.RS_WAIT
-    elif isinstance(buffer, ir._CollectiveKernel):
+    elif isinstance(ir_node, ir._CollectiveKernel):
         # Determine if the collective kernel is for ALL_GATHER or REDUCE_SCATTER
         if (
-            buffer.op_overload
+            ir_node.op_overload
             == torch.ops._c10d_functional.all_gather_into_tensor.default
         ):
             return NodeType.ALL_GATHER
         elif (
-            buffer.op_overload
+            ir_node.op_overload
             == torch.ops._c10d_functional.reduce_scatter_tensor.default
         ):
             return NodeType.REDUCE_SCATTER
@@ -94,13 +94,13 @@ def get_node_type(node: "scheduler.BaseSchedulerNode") -> NodeType:
 
     if isinstance(node, scheduler.GroupedSchedulerNode):
         # [Only for bucketing]: newly created AG and RS are grouped as GroupedSchedulerNode
-        child_nodes_type = [get_buffer_type(n.node) for n in node.snodes]
+        child_nodes_type = [_get_ir_node_type(n) for n in [node.snodes[0], node.snodes[-1]]]
 
-        if child_nodes_type[-1] in [NodeType.ALL_GATHER, NodeType.REDUCE_SCATTER]:
-            return child_nodes_type[-1]
-        elif child_nodes_type[0] in [NodeType.AG_WAIT, NodeType.RS_WAIT]:
+        if child_nodes_type[0] in [NodeType.AG_WAIT, NodeType.RS_WAIT]:
             return child_nodes_type[0]
+        elif child_nodes_type[1] in [NodeType.ALL_GATHER, NodeType.REDUCE_SCATTER]:
+            return child_nodes_type[1]
         else:
             return NodeType.COMPUTE
 
-    return get_buffer_type(node.node)
+    return _get_ir_node_type(node.node)

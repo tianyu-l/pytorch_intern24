@@ -40,11 +40,11 @@ def bucket_all_gather_by_block(
         if current_module != last_module and len(all_gather_list) > 0:
             # bucketing in the block boundary
             assert len(all_gather_list) == len(ag_wait_list)
-            merged_all_gather, ag_buffer = merge_allgather(
+            merged_all_gather, ag_ir_node = merge_allgather(
                 sched, all_gather_list
             )
             merged_wait = merge_ag_wait(
-                sched, ag_wait_list, all_gather_list, ag_buffer
+                sched, ag_wait_list, all_gather_list, ag_ir_node
             )
 
             for n in all_gather_dep_list + [merged_all_gather, merged_wait]:
@@ -77,9 +77,9 @@ def bucket_all_gather_by_block(
     assert len(all_gather_list) == len(ag_wait_list)
 
     if len(all_gather_list) > 0:
-        merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list)
+        merged_all_gather, ag_ir_node = merge_allgather(sched, all_gather_list)
         merged_wait = merge_ag_wait(
-            sched, ag_wait_list, all_gather_list, ag_buffer
+            sched, ag_wait_list, all_gather_list, ag_ir_node
         )
         for n in all_gather_dep_list + [merged_all_gather, merged_wait]:
             if n not in result_list:
@@ -125,14 +125,14 @@ def bucket_reduce_scatter_by_block(
         if current_module != last_module and len(reduce_scatter_list) > 0:
             # bucketing in the block boundary
             assert len(reduce_scatter_list) == len(rs_wait_list)
-            (merged_reduce_scatter, rs_buffer, copy_in_size) = merge_reducescatter(
+            (merged_reduce_scatter, rs_ir_node, copy_in_size) = merge_reducescatter(
                 sched, reduce_scatter_list
             )
             merged_wait = merge_rs_wait(
                 sched,
                 rs_wait_list,
                 reduce_scatter_list,
-                rs_buffer,
+                rs_ir_node,
                 copy_in_size,
             )
 
@@ -165,14 +165,14 @@ def bucket_reduce_scatter_by_block(
     assert len(reduce_scatter_list) == len(rs_wait_list)
 
     if len(reduce_scatter_list) > 0:
-        (merged_reduce_scatter, rs_buffer, copy_in_size) = merge_reducescatter(
+        (merged_reduce_scatter, rs_ir_node, copy_in_size) = merge_reducescatter(
             sched, reduce_scatter_list
         )
         merged_wait = merge_rs_wait(
             sched,
             rs_wait_list,
             reduce_scatter_list,
-            rs_buffer,
+            rs_ir_node,
             copy_in_size,
         )
         for n in [merged_reduce_scatter, merged_wait] + rs_wait_dep_list:

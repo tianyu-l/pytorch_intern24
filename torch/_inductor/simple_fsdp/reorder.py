@@ -37,10 +37,10 @@ def reorder_all_gather(
                 all_gather_list.extend(inverse_user)
         elif node_type == NodeType.AG_WAIT:
             if (
-                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
-                and not all_gather_before_last_wait
+                not all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
+                assert node_to_type[snodes[idx + 1]] is NodeType.ALL_GATHER
                 # move i-th all gather node and its dependencies after (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
@@ -48,10 +48,10 @@ def reorder_all_gather(
             result_list.append(node)
 
             if (
-                node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
-                and all_gather_before_last_wait
+                all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
+                assert node_to_type[snodes[idx + 1]] is NodeType.ALL_GATHER
                 # move i-th all gather node and its dependencies before (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
@@ -85,13 +85,10 @@ def reorder_reduce_scatter(
             if node not in result_list and node not in wait_list:
                 result_list.append(node)
         elif node_type == NodeType.RS_WAIT:
-            if node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER:
-                # gather wait node after reduce scatter
-                wait_list.append(node)
-                wait_list.extend(node_users[node])
-            else:
-                # we do not reorder wait node after all gather
-                result_list.append(node)
+            assert node_to_type[snodes[idx - 1]] is NodeType.REDUCE_SCATTER
+            # gather wait node after reduce scatter
+            wait_list.append(node)
+            wait_list.extend(node_users[node])
         elif node_type == NodeType.REDUCE_SCATTER:
             if len(wait_list) > 0:
                 # move the i-th wait node before (i+1)-th reduce scatter node
