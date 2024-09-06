@@ -40,7 +40,7 @@ def reorder_all_gather(
                 not all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
-                assert node_to_type[snodes[idx + 1]] is NodeType.ALL_GATHER
+                assert node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
                 # move i-th all gather node and its dependencies after (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
@@ -51,7 +51,7 @@ def reorder_all_gather(
                 all_gather_before_last_wait
                 and len(all_gather_list) > 0
             ):
-                assert node_to_type[snodes[idx + 1]] is NodeType.ALL_GATHER
+                assert node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
                 # move i-th all gather node and its dependencies before (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
                 all_gather_list = []
@@ -85,7 +85,7 @@ def reorder_reduce_scatter(
             if node not in result_list and node not in wait_list:
                 result_list.append(node)
         elif node_type == NodeType.RS_WAIT:
-            assert node_to_type[snodes[idx - 1]] is NodeType.REDUCE_SCATTER
+            assert node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER
             # gather wait node after reduce scatter
             wait_list.append(node)
             wait_list.extend(node_users[node])
