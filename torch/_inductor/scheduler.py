@@ -1599,19 +1599,22 @@ class Scheduler:
 
         front_node = None
         if config.simplefsdp.enable_bucket:
-            # get the first compute node w/o AG in backward graph
-            front_node = reorder.get_front_node(self.nodes)
-            # bucket all gather
-            self.nodes = transformer_block_bucket.bucket_all_gather_by_block(
-                self, self.nodes
-            )
+            if config.simplefsdp.transformer_block_bucket:
+                if config.simplefsdp.pp_world_size < 0:
+                    # get the first compute node w/o AG in backward graph
+                    front_node = reorder.get_front_node(self.nodes)
 
-            # TODO(ruisizhang123): determine fwd/bwd graph, other than using hardcode from self.post_grad_graph_id
-            if self.post_grad_graph_id == 1:
-                # bucket reduce scatter
-                self.nodes = transformer_block_bucket.bucket_reduce_scatter_by_block(
+                # bucket all gather
+                self.nodes = transformer_block_bucket.bucket_all_gather_by_block(
                     self, self.nodes
                 )
+
+                # TODO(ruisizhang123): determine fwd/bwd graph, other than using hardcode from self.post_grad_graph_id
+                if self.post_grad_graph_id == 1:
+                    # bucket reduce scatter
+                    self.nodes = transformer_block_bucket.bucket_reduce_scatter_by_block(
+                        self, self.nodes
+                    )
 
         if config.simplefsdp.enable_reorder:
             if self.post_grad_graph_id == 0:

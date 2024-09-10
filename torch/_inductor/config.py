@@ -1035,6 +1035,12 @@ class simplefsdp:
     enable_bucket = False
     enable_reorder = False
 
+    transformer_block_bucket = False
+
+    fsdp_world_size = -1
+    tp_world_size = -1
+    pp_world_size = -1
+
 
 # create a directory containing lots of debug information
 class trace:

@@ -59,12 +59,18 @@ def all_gather_copy_in_meta(
     device: torch.device,
     simplefsdp: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    rank = rank%world_size
     all_gather_output = torch.empty(
         (all_gather_input_numel * world_size,), dtype=dtype, device="meta"
     )
     all_gather_input = all_gather_output.narrow(
         0, all_gather_input_numel * rank, all_gather_input_numel
     )
+    foreach_copy_dsts = torch.split(all_gather_input, inp_split_sizes)
+    if simplefsdp:
+        all_gather_inputs = [t.flatten() for t in all_gather_inputs]
+    with torch.no_grad():
+        torch._foreach_copy_(foreach_copy_dsts, all_gather_inputs)
     return all_gather_input, all_gather_output
 
 
@@ -80,6 +86,7 @@ def all_gather_copy_in_cuda(
     device: torch.device,
     simplefsdp: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    rank = rank%world_size
     all_gather_output = torch.empty(
         (all_gather_input_numel * world_size,), dtype=dtype, device=device
     )
@@ -95,7 +102,7 @@ def all_gather_copy_in_cuda(
 
 
 lib.define(
-    "split_with_sizes_copy(Tensor all_gather_output, SymInt[] all_gather_input_split_sizes, int dim, *, Tensor(a!)[] out, bool simplefsdp=False) -> ()"
+    "split_with_sizes_copy(Tensor all_gather_output, SymInt[] all_gather_input_split_sizes, int dim, *, Tensor(a!)[] out, int world_size=0, bool simplefsdp=False) -> ()"
 )
 
 
@@ -107,10 +114,10 @@ def split_with_sizes_copy(
     all_gather_input_split_sizes: List[int],
     dim: int,
     out: List[torch.Tensor],
+    world_size: int = 0,
     simplefsdp: bool = False,
 ) -> None:
     if simplefsdp:
-        world_size = dist.get_world_size()
         out = [o.view(world_size, -1).type(all_gather_output.dtype) for o in out]
         all_gather_output = all_gather_output.view(world_size, -1)
         all_gather_input_split_sizes = [
@@ -178,7 +185,6 @@ def chunk_cat(
     simplefsdp: bool = False,
 ) -> torch.Tensor:
     if simplefsdp:
-        world_size = dist.get_world_size()
         reduce_dtype = torch.bfloat16
         tensors = [t.type(reduce_dtype) for t in tensors]
         chunk_cat_out = torch._chunk_cat(tensors, dim, num_chunks)

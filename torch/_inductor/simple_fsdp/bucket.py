@@ -4,7 +4,7 @@ from typing import List, Tuple, Union
 import torch
 import torch.distributed as dist
 
-from .. import ir, scheduler
+from .. import ir, scheduler, config
 from ..virtualized import V
 
 
@@ -96,6 +96,7 @@ def merge_ag_wait(
         tuple(math.prod(n.node.get_layout().size) for n in original_all_gather_list),
         dim=1,
         out=[n.node for n in original_all_gather_list],
+        world_size = config.simplefsdp.fsdp_world_size,
         simplefsdp=True,
     )
     copy_out_snode = create_scheduler_node_from_ir_node(sched, copy_out)
@@ -127,7 +128,7 @@ def merge_reducescatter(
         torch.ops.fsdp.chunk_cat.default,
         copy_in_inputs,
         dim=0,
-        num_chunks=dist.get_world_size(),
+        num_chunks=config.simplefsdp.fsdp_world_size,
         simplefsdp=True,
     )
     copy_in_snode = create_scheduler_node_from_ir_node(sched, V.graph.operations[-2])
