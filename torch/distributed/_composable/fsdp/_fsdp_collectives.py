@@ -59,7 +59,7 @@ def all_gather_copy_in_meta(
     device: torch.device,
     simplefsdp: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    rank = rank%world_size
+    rank = rank % world_size
     all_gather_output = torch.empty(
         (all_gather_input_numel * world_size,), dtype=dtype, device="meta"
     )
@@ -86,7 +86,7 @@ def all_gather_copy_in_cuda(
     device: torch.device,
     simplefsdp: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    rank = rank%world_size
+    rank = rank % world_size
     all_gather_output = torch.empty(
         (all_gather_input_numel * world_size,), dtype=dtype, device=device
     )

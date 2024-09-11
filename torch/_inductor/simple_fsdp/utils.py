@@ -4,7 +4,7 @@ from typing import Dict, List, Set, Tuple
 
 import torch
 
-from .. import ir, scheduler, config
+from .. import config, ir, scheduler
 
 
 class NodeType(IntEnum):
@@ -52,11 +52,12 @@ def compute_node_users(
 
     return inverse_users, node_users
 
+
 def _check_ir_node_fsdp(ir_node: "ir.Operation") -> bool:
     """
     Determine if the AG/RS node is for FSDP or TP
     """
-    if config.simplefsdp.tp_world_size < 0:
+    if config.simplefsdp.tp_degree < 0:
         return True
 
     is_fsdp = False
@@ -67,11 +68,12 @@ def _check_ir_node_fsdp(ir_node: "ir.Operation") -> bool:
         is_fsdp = True
 
     for n in ir_node_origins:
-        meta_data = n.meta.get("stack_trace", {})  
+        meta_data = n.meta.get("stack_trace", {})
         # TODO(ruisizhang123): hack to get FSDP node (the FSDP AG/RS are created from torch_spmd)
-        if 'torch_spmd' in meta_data:
+        if "parametrization" in meta_data:
             is_fsdp = True
     return is_fsdp
+
 
 def _get_ir_node_type(ir_node: "ir.Operation") -> NodeType:
     """
@@ -81,14 +83,12 @@ def _get_ir_node_type(ir_node: "ir.Operation") -> NodeType:
         # Determine if the wait node is waiting for ALL_GATHER or REDUCE_SCATTER
         ir_op_overload = getattr(ir_node.inputs[0], "op_overload", None)
         if (
-            ir_op_overload
-            == torch.ops._c10d_functional.all_gather_into_tensor.default
+            ir_op_overload == torch.ops._c10d_functional.all_gather_into_tensor.default
             and _check_ir_node_fsdp(ir_node.inputs[0])
         ):
             return NodeType.AG_WAIT
         elif (
-            ir_op_overload
-            == torch.ops._c10d_functional.reduce_scatter_tensor.default
+            ir_op_overload == torch.ops._c10d_functional.reduce_scatter_tensor.default
             and _check_ir_node_fsdp(ir_node.inputs[0])
         ):
             return NodeType.RS_WAIT
@@ -96,14 +96,12 @@ def _get_ir_node_type(ir_node: "ir.Operation") -> NodeType:
         # Determine if the collective kernel is for ALL_GATHER or REDUCE_SCATTER
         ir_op_overload = getattr(ir_node, "op_overload", None)
         if (
-            ir_op_overload
-            == torch.ops._c10d_functional.all_gather_into_tensor.default
+            ir_op_overload == torch.ops._c10d_functional.all_gather_into_tensor.default
             and _check_ir_node_fsdp(ir_node)
         ):
             return NodeType.ALL_GATHER
         elif (
-            ir_op_overload
-            == torch.ops._c10d_functional.reduce_scatter_tensor.default
+            ir_op_overload == torch.ops._c10d_functional.reduce_scatter_tensor.default
             and _check_ir_node_fsdp(ir_node)
         ):
             return NodeType.REDUCE_SCATTER
@@ -121,7 +119,9 @@ def get_node_type(node: "scheduler.BaseSchedulerNode") -> NodeType:
 
     if isinstance(node, scheduler.GroupedSchedulerNode):
         # [Only for bucketing]: newly created AG and RS are grouped as GroupedSchedulerNode
-        child_nodes_type = [_get_ir_node_type(n) for n in [node.snodes[0].node, node.snodes[-1].node]]
+        child_nodes_type = [
+            _get_ir_node_type(n) for n in [node.snodes[0].node, node.snodes[-1].node]
+        ]
         if child_nodes_type[0] in [NodeType.AG_WAIT, NodeType.RS_WAIT]:
             return child_nodes_type[0]
         elif child_nodes_type[1] in [NodeType.ALL_GATHER, NodeType.REDUCE_SCATTER]:

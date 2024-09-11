@@ -1037,9 +1037,9 @@ class simplefsdp:
 
     transformer_block_bucket = False
 
-    fsdp_world_size = -1
-    tp_world_size = -1
-    pp_world_size = -1
+    fsdp_degree = -1
+    tp_degree = -1
+    pp_degree = -1
 
 
 # create a directory containing lots of debug information
