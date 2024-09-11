@@ -1032,10 +1032,8 @@ class halide:
 
 
 class simplefsdp:
-    enable_bucket = False
+    bucket_mode = "none"
     enable_reorder = False
-
-    transformer_block_bucket = False
 
     fsdp_degree = -1
     tp_degree = -1
