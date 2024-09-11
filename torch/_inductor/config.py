@@ -1038,6 +1038,7 @@ class simplefsdp:
     fsdp_degree = -1
     tp_degree = -1
     pp_degree = -1
+    device_mesh = None
 
 
 # create a directory containing lots of debug information

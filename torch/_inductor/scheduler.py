@@ -11,6 +11,7 @@ import operator
 import os
 import pprint
 import textwrap
+import time
 import typing
 from typing import (
     Any,
@@ -31,9 +32,12 @@ import sympy
 
 import torch
 import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
+import torch.distributed as dist
+import torch.utils._pytree as pytree
 from torch._dynamo.utils import counters, dynamo_timed
 from torch._inductor.metrics import get_metric_table, is_metric_table_enabled
 from torch.fx.experimental.symbolic_shapes import free_unbacked_symbols
+from torch.utils._mode_utils import no_dispatch
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._sympy.symbol import free_symbol_is_type, SymT
 from torch.utils._triton import has_triton
@@ -45,7 +49,7 @@ from .comm_analysis import estimate_nccl_collective_runtime
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .ir import ComputedBuffer, MultiOutput, MultiOutputLayout
 from .runtime.runtime_utils import green_text, red_text
-from .simple_fsdp import reorder, transformer_block_bucket
+from .simple_fsdp import greedy_bucket, reorder, transformer_block_bucket
 from .sizevars import SimplifyIndexing
 from .utils import (
     cache_on_self,
@@ -602,6 +606,90 @@ class BaseSchedulerNode:
 
         return node_bytes
 
+    def get_benchmark_runtime(self) -> float:
+        """
+        Returns estimated op runtime in nanoseconds (ns)
+        """
+        # Communication kernel benchmark
+        if is_collective(self.node):
+            # communication time for AG & RS
+            comm_time = estimate_nccl_collective_runtime(self.node)
+            return [comm_time * 1e-6, 0]
+        elif is_wait(self.node):
+            # wait is not profiled in GPU
+            return [0, 0]
+
+        # Compute kernel benchmark
+        if isinstance(self.node, ir.ComputedBuffer):
+            return [self.get_read_write_buffers_sizes() / get_gpu_dram_gbps() * 1e-6, 0]
+        elif isinstance(self.node, ir.ExternKernel):
+            cls = self.node.__class__
+            func = kernel_name_to_op.get(
+                getattr(self.node, "python_kernel_name", ""), None
+            )
+            if func is None:
+                func = kernel_name_to_op.get(
+                    str(getattr(self.node, "op_overload", "")), None
+                )
+            if func is not None:
+                # Don't use in_kernel_invocation_manager(fake_mode) as we want to do
+                # REAL compute (not with meta device)
+                inp_impls = {}
+                from .ir import ir_node_to_tensor
+
+                fake_inputs = [
+                    ir_node_to_tensor(input, guard_shape=False)
+                    for input in self.node.inputs
+                ]
+                flat_args, args_spec = pytree.tree_flatten(
+                    (fake_inputs, self.node.kwargs)
+                )
+                new_kwargs = self.node.fill_non_provided_args(
+                    fake_inputs, self.node.kwargs
+                )
+
+                with no_dispatch():
+
+                    def to_real_tensor(e):
+                        if not isinstance(e, torch.Tensor):
+                            return e
+                        if e.dtype in _float_types:
+                            out = torch.rand_like(e, device=e.device)
+                        else:
+                            out = torch.ones_like(e, device=e.device)
+                        if e.is_sparse:
+                            out._coalesced_(e.is_coalesced())
+                        inp_impls[id(out)] = e
+                        return out
+
+                    flat_args = [to_real_tensor(a) for a in flat_args]
+                    args, kwargs = pytree.tree_unflatten(flat_args, args_spec)
+                    r = func(*args, **kwargs)
+                    num_iters = 3
+                    start_event = torch.cuda.Event(enable_timing=True)
+                    end_event = torch.cuda.Event(enable_timing=True)
+                    cpu_start = time.time()
+                    total_memory = 0
+                    start_event.record(torch.cuda.current_stream())
+                    for _ in range(num_iters):
+                        r = None
+                        r = func(*args, **kwargs)
+                        memory = torch.cuda.memory_allocated() / 1024 / 1024 / 1024
+                        total_memory += memory
+                    end_event.record(torch.cuda.current_stream())
+                    cpu_end = time.time()
+                    torch.cuda.synchronize()
+                    cpu_time = (cpu_end - cpu_start) / 1000
+                    total_op_time = start_event.elapsed_time(end_event) - cpu_time
+                    mean_op_time = total_op_time / num_iters
+                    mean_memory = total_memory / num_iters
+                    del flat_args
+                return [mean_op_time, mean_memory]
+            else:
+                return [0, 0]
+        else:
+            return [0, 0]
+
     def get_estimated_runtime(self) -> float:
         """
         Returns estimated op runtime in nanoseconds (ns)
@@ -790,7 +878,16 @@ kernel_name_to_op = {
     "extern_kernels.mm": torch.ops.aten.mm,
     "extern_kernels.bmm": torch.ops.aten.bmm,
     "extern_kernels.addmm": torch.ops.aten.addmm,
+    "aten.mul.Tensor": torch.ops.aten.mul.Tensor,
+    "aten._scaled_dot_product_flash_attention.default": torch.ops.aten._scaled_dot_product_flash_attention.default,
 }
+
+_float_types = [
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+    torch.float64,
+]
 
 
 class ExternKernelSchedulerNode(BaseSchedulerNode):
@@ -1598,10 +1695,10 @@ class Scheduler:
         self.nodes = self.fuse_nodes(self.nodes)
 
         front_node = None
+
         if config.simplefsdp.bucket_mode == "transformer_block":
             if config.simplefsdp.pp_degree < 0:
                 # get the first compute node w/o AG in backward graph
-                # it doesn't apply to pp, because the model is partitioned. the get_front_node produces wrong front_node
                 front_node = reorder.get_front_node(self.nodes)
 
             # bucket all gather
@@ -1614,6 +1711,22 @@ class Scheduler:
                 # bucket reduce scatter
                 self.nodes = transformer_block_bucket.bucket_reduce_scatter_by_block(
                     self, self.nodes
+                )
+
+        elif config.simplefsdp.bucket_mode == "greedy":
+            # profile op runtime
+            run_time_dict = self.profile_nodes(self.nodes)
+
+            # auto-bucket forward nodes
+            if self.post_grad_graph_id == 0:
+                self.nodes = greedy_bucket.bucket_forward(
+                    self, self.nodes, run_time_dict
+                )
+
+            # auto-bucket backward nodes
+            if self.post_grad_graph_id == 1:
+                self.nodes = greedy_bucket.bucket_backward(
+                    self, self.nodes, run_time_dict
                 )
 
         if config.simplefsdp.enable_reorder:
@@ -1653,6 +1766,91 @@ class Scheduler:
                 "num_nodes_after_fusion": len(self.nodes),
             }
         )
+
+    def get_runtime_dict(self, node):
+        total_node = 0
+        run_time_dict = {}
+        for n in node:
+            if isinstance(n, FusedSchedulerNode):
+                total_time, total_memory = 0, 0
+                buffer_op_name = [str(i) for i in n.snodes[0].node.origins]
+                buffer_op_name = "".join(buffer_op_name)
+                for subnode in n.snodes:
+                    stime, smemory = subnode.get_benchmark_runtime()
+                    total_time += stime
+                    total_memory += smemory
+                run_time_dict[n.get_name()] = [buffer_op_name, total_time, total_memory]
+            elif isinstance(n, GroupedSchedulerNode):
+                total_time, total_memory = 0, 0
+                buffer_op_name = [str(i) for i in n.snodes[0].node.origins]
+                buffer_op_name = "".join(buffer_op_name)
+                for subnode in n.snodes:
+                    stime, smemory = subnode.get_benchmark_runtime()
+                    total_time += stime
+                    total_memory += smemory
+                run_time_dict[n.get_name()] = [buffer_op_name, total_time, total_memory]
+            else:
+                if isinstance(n.node, ir._WaitKernel):
+                    run_time_dict[n.get_name()] = ["", 0, 0]
+                else:
+                    python_kernel = getattr(n.node, "python_kernel_name", None)
+                    if python_kernel is not None:
+                        buffer_op_name = n.node.python_kernel_name
+                    else:
+                        buffer_op_name = [str(i) for i in n.node.origins]
+                        buffer_op_name = "".join(buffer_op_name)
+
+                    benchmark_op = n.get_benchmark_runtime()
+                    run_time_dict[n.get_name()] = [buffer_op_name] + benchmark_op
+        return run_time_dict
+
+    def profile_nodes(self, node) -> Dict[str, List[Union[str, float, float]]]:
+        current_rank = dist.get_rank()
+        objects = [None]
+        if config.simplefsdp.pp_degree < 0:
+            if current_rank == 0:
+                run_time_dict = self.get_runtime_dict(node)
+                objects = [run_time_dict]
+            dist.broadcast_object_list(objects, src=0)
+        else:
+            broadcast_lists = config.simplefsdp.device_mesh
+            if config.simplefsdp.tp_degree < 0:
+                send_runtime_rank = []
+                receive_runtime_dict = {}
+                for broadcast_list in broadcast_lists:
+                    send_runtime_rank.append(broadcast_list[0])
+                    for i in broadcast_list:
+                        receive_runtime_dict[i] = broadcast_list[0]
+                if current_rank in send_runtime_rank:
+                    run_time_dict = self.get_runtime_dict(node)
+                    objects = [run_time_dict]
+                dist.broadcast_object_list(
+                    objects, src=receive_runtime_dict[current_rank]
+                )
+            else:
+                receive_runtime_dict = {}
+                rank_group_dict = {}
+                send_runtime_rank = []
+
+                for broadcast_list in broadcast_lists:
+                    send_runtime_rank.append(broadcast_list[0][0])
+                    flatten_list = [i for sublist in broadcast_list for i in sublist]
+                    rank_group_dict[broadcast_list[0][0]] = dist.new_group(
+                        ranks=flatten_list
+                    )
+                    for subnode in flatten_list:
+                        receive_runtime_dict[subnode] = broadcast_list[0][0]
+
+                if current_rank in send_runtime_rank:
+                    run_time_dict = self.get_runtime_dict(node)
+                    objects = [run_time_dict]
+                dist.broadcast_object_list(
+                    objects,
+                    src=receive_runtime_dict[current_rank],
+                    group=rank_group_dict[receive_runtime_dict[current_rank]],
+                )
+        assert objects[0] is not None
+        return objects[0]
 
     def get_current_device_or_throw(self) -> torch.device:
         if device := self.current_device:
