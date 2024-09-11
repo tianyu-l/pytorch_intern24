@@ -1598,9 +1598,12 @@ class Scheduler:
         self.nodes = self.fuse_nodes(self.nodes)
 
         front_node = None
-        if config.simplefsdp.enable_bucket:
-            # get the first compute node w/o AG in backward graph
-            front_node = reorder.get_front_node(self.nodes)
+        if config.simplefsdp.bucket_mode == "transformer_block":
+            if config.simplefsdp.pp_degree < 0:
+                # get the first compute node w/o AG in backward graph
+                # it doesn't apply to pp, because the model is partitioned. the get_front_node produces wrong front_node
+                front_node = reorder.get_front_node(self.nodes)
+
             # bucket all gather
             self.nodes = transformer_block_bucket.bucket_all_gather_by_block(
                 self, self.nodes

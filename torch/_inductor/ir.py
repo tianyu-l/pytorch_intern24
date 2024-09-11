@@ -5991,7 +5991,7 @@ class FallbackKernel(ExternKernelAlloc):
                 or kernel == torch.ops.fsdp.split_with_sizes_copy.default
                 or kernel == torch.ops.fsdp.chunk_cat.default
                 or kernel == torch.ops.fsdp.read_out.default
-            ) and config.simplefsdp.enable_bucket:
+            ) and config.simplefsdp.bucket_mode != "none":
                 process_kernel_seperate = True
             else:
                 process_kernel_seperate = False
@@ -7094,7 +7094,7 @@ class _CollectiveKernel(FallbackKernel):
                         torch.ops.fsdp.chunk_cat.default,
                     ]
                 )
-            ) and config.simplefsdp.enable_bucket:
+            ) and config.simplefsdp.bucket_mode != "none":
                 process_kernel_seperate = True
             else:
                 process_kernel_seperate = False

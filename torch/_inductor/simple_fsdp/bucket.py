@@ -2,9 +2,9 @@ import math
 from typing import List, Tuple, Union
 
 import torch
-import torch.distributed as dist
 
 from .. import ir, scheduler
+from ..config import simplefsdp
 from ..virtualized import V
 
 
@@ -66,7 +66,9 @@ def merge_allgather(
         nodes[0].node.constant_args[1],
     )
     ag_snode = create_scheduler_node_from_ir_node(sched, ag_ir_node)
-    aggregated_node = scheduler.GroupedSchedulerNode(sched, [copy_in_snode, copy_in_output_snode, ag_snode])
+    aggregated_node = scheduler.GroupedSchedulerNode(
+        sched, [copy_in_snode, copy_in_output_snode, ag_snode]
+    )
     return aggregated_node, ag_ir_node
 
 
@@ -96,6 +98,7 @@ def merge_ag_wait(
         tuple(math.prod(n.node.get_layout().size) for n in original_all_gather_list),
         dim=1,
         out=[n.node for n in original_all_gather_list],
+        world_size=simplefsdp.fsdp_degree,
         simplefsdp=True,
     )
     copy_out_snode = create_scheduler_node_from_ir_node(sched, copy_out)
@@ -105,7 +108,9 @@ def merge_ag_wait(
 def merge_reducescatter(
     sched: "scheduler.Scheduler",
     nodes: List["scheduler.BaseSchedulerNode"],
-) -> Tuple["scheduler.BaseSchedulerNode", ir.Operation, List[Union[List[int], List[int]]]]:
+) -> Tuple[
+    "scheduler.BaseSchedulerNode", ir.Operation, List[Union[List[int], List[int]]]
+]:
     """
     Bucket small REDUCE_SCATTER nodes into one big REDUCE_SCATTER node
     """
@@ -127,7 +132,7 @@ def merge_reducescatter(
         torch.ops.fsdp.chunk_cat.default,
         copy_in_inputs,
         dim=0,
-        num_chunks=dist.get_world_size(),
+        num_chunks=simplefsdp.fsdp_degree,
         simplefsdp=True,
     )
     copy_in_snode = create_scheduler_node_from_ir_node(sched, V.graph.operations[-2])
@@ -144,7 +149,9 @@ def merge_reducescatter(
         nodes[0].node.constant_args[2],
     )
     rs_snode = create_scheduler_node_from_ir_node(sched, rs_ir_node)
-    aggregated_node = scheduler.GroupedSchedulerNode(sched, [copy_in_snode, copy_in_output_snode, rs_snode])
+    aggregated_node = scheduler.GroupedSchedulerNode(
+        sched, [copy_in_snode, copy_in_output_snode, rs_snode]
+    )
     return (aggregated_node, rs_ir_node, copy_in_size)
 
 
