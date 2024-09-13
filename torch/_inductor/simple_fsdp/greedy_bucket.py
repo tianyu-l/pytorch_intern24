@@ -7,6 +7,7 @@ from .. import ir, scheduler
 
 from .utils import NodeType, compute_node_users, get_node_type
 from .bucket import merge_allgather, merge_ag_wait, merge_reducescatter, merge_rs_wait
+from ..comm_analysis import estimate_bucked_nccl_collective_runtime
 
 @dataclass
 class AG_INFO:
@@ -59,11 +60,10 @@ def get_ag_info(
 
     # pick up the computes that don't have corresponding all_gather
     for node in snodes:
-        if get_node_type(node) == NodeType.COMPUTE:
-            users_type = [get_node_type(i) for i in list(node_users[node])]
-            if NodeType.ALL_GATHER in users_type:
-                break
-            front_nodes.append(node)
+        users_type = [get_node_type(i) for i in list(node_users[node])]
+        if NodeType.ALL_GATHER in users_type:
+            break
+        front_nodes.append(node)
 
     for node in snodes[len(front_nodes):]:
         if node.get_name() in run_time_dict:
@@ -99,7 +99,6 @@ def get_ag_info(
                 inverse_users_type = [get_node_type(i) for i in list(inverse_users[node])]
                 if NodeType.RS_WAIT in inverse_users_type:
                     continue
-      
             ag_info_dict[all_gather].COMPUTE.append(node)
             ag_info_dict[all_gather].COMPUTE_TIME += run_time
             ag_info_dict[all_gather].COMPUTE_MEMORY += memory
@@ -205,14 +204,15 @@ def get_greedy_bucket_plan(
 
                 # update the number for greedy
                 current_mem += ag_info_dict[node].COMPUTE_MEMORY
-                current_ag += ag_info_dict[node].AG_TIME
+                current_ag = estimate_bucked_nccl_collective_runtime(all_gather_list)
                 next_comp += ag_info_dict[node].COMPUTE_TIME
 
                 if stage == "backward":
                     reduce_scatter_list.extend(ag_info_dict[node].REDUCE_SCATTER)
                     rs_wait_list.extend(ag_info_dict[node].RS_WAIT)
                     rs_wait_dep_list.extend(ag_info_dict[node].RS_WAIT_DEP)
-                    next_rs += ag_info_dict[node].RS_TIME
+                    if len(reduce_scatter_list) > 0:
+                        next_rs = estimate_bucked_nccl_collective_runtime(reduce_scatter_list)
 
     if len(all_gather_list) > 0:
         merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list)
