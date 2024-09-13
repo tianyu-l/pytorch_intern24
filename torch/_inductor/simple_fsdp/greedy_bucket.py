@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Union
 
 import torch
@@ -9,18 +9,18 @@ from .utils import NodeType, compute_node_users, get_node_type
 from .bucket import merge_allgather, merge_ag_wait, merge_reducescatter, merge_rs_wait
 
 @dataclass
-class ag_info:
-    AG_INV_DEP: List["scheduler.BaseSchedulerNode"] = []
-    AG_WAIT: List["scheduler.BaseSchedulerNode"] = []
-    COMPUTE: List["scheduler.BaseSchedulerNode"] = []
+class AG_INFO:
+    AG_INV_DEP: List["scheduler.BaseSchedulerNode"] = field(default_factory=list)
+    AG_WAIT: List["scheduler.BaseSchedulerNode"] = field(default_factory=list)
+    COMPUTE: List["scheduler.BaseSchedulerNode"] = field(default_factory=list)
     AG_TIME: float = 0
     COMPUTE_TIME: float = 0
     COMPUTE_MEMORY: float = 0
 
     # additional configs for backward
-    REDUCE_SCATTER: List["scheduler.BaseSchedulerNode"] = []
-    RS_WAIT: List["scheduler.BaseSchedulerNode"] = []
-    RS_WAIT_DEP: List["scheduler.BaseSchedulerNode"] = []
+    REDUCE_SCATTER: List["scheduler.BaseSchedulerNode"] = field(default_factory=list)
+    RS_WAIT: List["scheduler.BaseSchedulerNode"] = field(default_factory=list)
+    RS_WAIT_DEP: List["scheduler.BaseSchedulerNode"] = field(default_factory=list)
     RS_TIME: float = 0
 
 
@@ -28,7 +28,10 @@ def greedy_check(current_comp, current_ag, current_mem, node_ag, node_mem, memor
     """
     Greedy algorithm for backward
     """
-    if first_AG and current_ag != 0:
+    if current_ag == 0:
+        return False
+
+    if first_AG:
         return True
 
     if current_mem + node_mem > memory_constraint:
@@ -39,7 +42,11 @@ def greedy_check(current_comp, current_ag, current_mem, node_ag, node_mem, memor
 
     return False
 
-def get_ag_info(snodes: List["scheduler.BaseSchedulerNode"], stage="forward"):
+def get_ag_info(
+    snodes: List["scheduler.BaseSchedulerNode"],
+    run_time_dict: Dict[str, List[Union[str, float, float]]],
+    stage="forward"
+) -> Dict["scheduler.BaseSchedulerNode", AG_INFO]:
     """
     Get the information of all_gather and reduce_scatter
     """
@@ -65,17 +72,17 @@ def get_ag_info(snodes: List["scheduler.BaseSchedulerNode"], stage="forward"):
             run_time, memory = 0, 0
 
         if get_node_type(node) == NodeType.ALL_GATHER:
-            # A ag_dict consists of 9 parts:
+            # A ag_info consists of 9 parts:
             # [Node]: (1) AG_INV_DEP: The node ALL_GATHER depends on for read-in; (2) AG_WAIT: ALL_GATHER's wait nodes; (3) COMPUTE: COMPUTE nodes ALL_GATHER fetches.
             # （4） REDUCE_SCATTER: REDUCE_SCATTE that reads from COMPUTE nodes; (5) RS_WAIT: REDUCE_SCATTER's wait nodes;
             # [Estimation Num.]: (1) AG_TIME: The estimated ALL_GATHER time; (2) COMPUTE_TIME: The estimated COMPUTE time; (3) COMPUTE_MEMORY: The estimated meory for computation.
             # (4) RS_TIME: The estimated REDUCE_SCATTER time; 
-            ag_dict = ag_info()
+            ag_info = AG_INFO()
             ag_wait = list(node_users[node])
 
-            ag_dict.AG_WAIT = ag_wait
-            ag_dict.AG_TIME = run_time
-            ag_info_dict[node] = ag_dict
+            ag_info.AG_WAIT = ag_wait
+            ag_info.AG_TIME = run_time
+            ag_info_dict[node] = ag_info
             all_gather = node
 
             if len(front_nodes) > 0:
@@ -120,7 +127,7 @@ def get_ag_info(snodes: List["scheduler.BaseSchedulerNode"], stage="forward"):
 def get_greedy_bucket_plan(
     sched: "scheduler.Scheduler",
     snodes: List["scheduler.BaseSchedulerNode"],
-    run_time_dict: Dict[str, List[Union[str, float, float]]],
+    ag_info_dict: Dict["scheduler.BaseSchedulerNode", AG_INFO],
     stage="forward"
 ) -> List["scheduler.BaseSchedulerNode"]:
     """
@@ -137,14 +144,14 @@ def get_greedy_bucket_plan(
     current_comp = 0 # compute time in step_i
     current_ag = 0 # all gather time in step_i
     current_mem = 0 # memory in step_i
+    current_rs = 0 # reduce scatter time in step_i, by default, it is 0 in forward
+    next_comp = 0 # compute time in step_(i+1), derived from all gather in step_i
     first_AG = True
 
     if stage == "backward":
         reduce_scatter_list = []
         rs_wait_list = []
         rs_wait_dep_list = []
-        current_rs = 0 # reduce scatter time in step_i
-        next_comp = 0 # compute time in step_(i+1), derived from all gather in step_i
         next_rs = 0 # reduce scatter time in step_(i+1), derived from all gather in step_i
 
     for idx, node in enumerate(snodes):
@@ -235,8 +242,8 @@ def bucket_forward(
     """
     Greedy bucket ALL_GATHER and AG_WAIT
     """
-    ag_info_dict = get_ag_info(snodes)
-    result_list = get_greedy_bucket_plan(sched, snodes, run_time_dict) 
+    ag_info_dict = get_ag_info(snodes, run_time_dict)
+    result_list = get_greedy_bucket_plan(sched, snodes, ag_info_dict)
     return result_list
 
 
@@ -248,6 +255,6 @@ def bucket_backward(
     """
     Greedy bucket REDUCE_SCATTER and RS_WAIT
     """
-    ag_info_dict = get_ag_info(snodes, stage="backward")
-    result_list = get_greedy_bucket_plan(sched, snodes, run_time_dict, stage="backward")
+    ag_info_dict = get_ag_info(snodes, run_time_dict, stage="backward")
+    result_list = get_greedy_bucket_plan(sched, snodes, ag_info_dict, stage="backward")
     return result_list

@@ -1,7 +1,7 @@
 from collections import defaultdict
 import time
 from enum import IntEnum
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -10,6 +10,8 @@ from torch.utils._mode_utils import no_dispatch
 
 from .. import ir, scheduler
 from ..config import simplefsdp
+from ..utils import is_collective, is_wait, get_gpu_dram_gbps
+from ..comm_analysis import estimate_nccl_collective_runtime
 
 class NodeType(IntEnum):
     ALL_GATHER = 0
@@ -18,6 +20,15 @@ class NodeType(IntEnum):
     AG_WAIT = 3
     RS_WAIT = 4
 
+
+kernel_name_to_op = {
+    "extern_kernels.convolution": torch.ops.aten.convolution,
+    "extern_kernels.mm": torch.ops.aten.mm,
+    "extern_kernels.bmm": torch.ops.aten.bmm,
+    "extern_kernels.addmm": torch.ops.aten.addmm,
+    "aten.mul.Tensor": torch.ops.aten.mul.Tensor,
+    "aten._scaled_dot_product_flash_attention.default": torch.ops.aten._scaled_dot_product_flash_attention.default,
+}
 
 def compute_node_users(
     snodes: List["scheduler.BaseSchedulerNode"],
@@ -164,10 +175,9 @@ def _get_benchmark_runtime(node) -> List[Union[float, float]]:
             # Don't use in_kernel_invocation_manager(fake_mode) as we want to do
             # REAL compute (not with meta device)
             inp_impls = {}
-            from .ir import ir_node_to_tensor
 
             fake_inputs = [
-                ir_node_to_tensor(input, guard_shape=False)
+                ir.ir_node_to_tensor(input, guard_shape=False)
                 for input in node.node.inputs
             ]
             flat_args, args_spec = pytree.tree_flatten(
