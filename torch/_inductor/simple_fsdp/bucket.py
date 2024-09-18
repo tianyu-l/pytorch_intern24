@@ -40,6 +40,7 @@ def merge_allgather(
     inp_split_flatten = [math.prod(cbuf.get_layout().size) for cbuf in copy_in_inputs]
     inp_split_sizes = inp_split_flatten
     all_gather_input_numel = sum(inp_split_flatten)
+    # NOTE: placeholder to reuse FSDP2's API, but will not take effect. (dtype & device)
     dtype = torch.bfloat16
     device = torch.device("cuda")
     copy_in_output, _ = ir.FallbackKernel.create(

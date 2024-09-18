@@ -1040,7 +1040,8 @@ class simplefsdp:
     pp_degree = -1
     device_mesh = None
 
-    time_coff = 1
+    ag_comm_time_multiplier = 5
+    rs_comm_time_multiplier = 5
     forward_memory_constraint = 320
     backward_memory_constraint = 320
 

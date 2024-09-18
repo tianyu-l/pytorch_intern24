@@ -24,7 +24,7 @@ class CollectiveInfo:
     rs_time: float = 0
 
 
-def greedy_check(current_comp, current_ag, current_mem, node_ag, node_mem, memory_constraint, is_first_ag, current_rs=0):
+def greedy_check(current_comp, current_mem, node_ag, node_mem, memory_constraint, is_first_ag, current_rs=0):
     """
     Check if the current node satisfy the greedy bucketing rule
         Return False: the current node satisfy the greedy rule and should not start a new bucket
@@ -34,16 +34,13 @@ def greedy_check(current_comp, current_ag, current_mem, node_ag, node_mem, memor
         2. compute memory constraint is not satisfied
         3. the current node's communication time cannot be overlapped with last bucket's compute time
     """
-    if current_ag == 0:
-        return False
-
     if is_first_ag:
-        return True
+        return False
 
     if current_mem + node_mem > memory_constraint:
         return True
 
-    if current_ag + node_ag + current_rs > current_comp:
+    if node_ag + current_rs > current_comp:
         return True
 
     return False
@@ -75,13 +72,13 @@ def get_collective_info(
             run_time, memory = 0, 0
 
         if get_node_type(node) == NodeType.ALL_GATHER:
-            # A ag_info consists of 9 parts:
+            # A CollectiveInfo consists of 9 parts:
             # [Node]: (1) ag_inv_dep: The node ALL_GATHER depends on for read-in; (2) ag_wait: ALL_GATHER's wait nodes; (3) compute: compute nodes ALL_GATHER fetches.
             # （4） reduce_scatter: REDUCE_SCATTE that reads from compute nodes; (5) rs_wait: reduce_scatter's wait nodes; (6) rs_wait_dep: rs_wait's dep nodes.
             # [Estimation Num.]: (1) ag_time: The estimated ALL_GATHER time; (2) compute_time: The estimated compute time; (3) compute_memory: The estimated meory for computation.
             # (4) rs_time: The estimated reduce_scatter time;
-            ag_info = CollectiveInfo(ag_wait=list(node_users[node]), ag_time=run_time,)
-            collective_info_dict[node] = ag_info
+            collective_info = CollectiveInfo(ag_wait=list(node_users[node]), ag_time=run_time,)
+            collective_info_dict[node] = collective_info
             all_gather = node
 
             if len(front_nodes) > 0:
@@ -155,7 +152,7 @@ def get_greedy_bucket_plan(
     for idx, node in enumerate(snodes):
         if get_node_type(node) == NodeType.ALL_GATHER:
             # TODO(ruisizhang123): the memory_constraint is defined manually, we need to figure out a better way to get the memory_constraint
-            if greedy_check(current_comp, current_ag, current_mem, collective_info_dict[node].ag_time, collective_info_dict[node].compute_memory, memory_constraint, is_first_ag, current_rs):
+            if greedy_check(current_comp, current_mem, estimate_bucketed_nccl_collective_runtime(all_gather_list+[node]), collective_info_dict[node].compute_memory, memory_constraint, is_first_ag, current_rs):
                 # merge all_gather
                 merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list)
                 merged_ag_wait = merge_ag_wait(sched, ag_wait_list, all_gather_list, ag_buffer)
@@ -182,7 +179,6 @@ def get_greedy_bucket_plan(
 
                 # clear the number for greedy
                 current_comp = next_comp
-                current_ag = collective_info_dict[node].ag_time
                 current_mem = collective_info_dict[node].compute_memory
                 next_comp = collective_info_dict[node].compute_time
 
@@ -192,9 +188,6 @@ def get_greedy_bucket_plan(
                     rs_wait_dep_list = collective_info_dict[node].rs_wait_dep
                     current_rs = next_rs
                     next_rs = collective_info_dict[node].rs_time
-
-                # the first AG is not bucketed
-                is_first_ag = False
             else:
                 # update the list for bucketing
                 all_gather_list.append(node)
@@ -204,15 +197,17 @@ def get_greedy_bucket_plan(
 
                 # update the number for greedy
                 current_mem += collective_info_dict[node].compute_memory
-                current_ag = estimate_bucketed_nccl_collective_runtime(all_gather_list)
                 next_comp += collective_info_dict[node].compute_time
+
+                # the first AG is not bucketed
+                is_first_ag = False
 
                 if is_backward:
                     reduce_scatter_list.extend(collective_info_dict[node].reduce_scatter)
                     rs_wait_list.extend(collective_info_dict[node].rs_wait)
                     rs_wait_dep_list.extend(collective_info_dict[node].rs_wait_dep)
                     if len(reduce_scatter_list) > 0:
-                        next_rs = estimate_bucketed_nccl_collective_runtime(reduce_scatter_list)
+                        next_rs = estimate_bucketed_nccl_collective_runtime(reduce_scatter_list, is_ag=False)
 
     if len(all_gather_list) > 0:
         merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list)

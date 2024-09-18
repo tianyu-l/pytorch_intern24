@@ -20,16 +20,6 @@ class NodeType(IntEnum):
     AG_WAIT = 3
     RS_WAIT = 4
 
-
-kernel_name_to_op = {
-    "extern_kernels.convolution": torch.ops.aten.convolution,
-    "extern_kernels.mm": torch.ops.aten.mm,
-    "extern_kernels.bmm": torch.ops.aten.bmm,
-    "extern_kernels.addmm": torch.ops.aten.addmm,
-    "aten.mul.Tensor": torch.ops.aten.mul.Tensor,
-    "aten._scaled_dot_product_flash_attention.default": torch.ops.aten._scaled_dot_product_flash_attention.default,
-}
-
 def compute_node_users(
     snodes: List["scheduler.BaseSchedulerNode"],
 ) -> Tuple[
@@ -165,11 +155,11 @@ def _get_benchmark_runtime(node) -> List[float]:
         return [node.get_read_write_buffers_sizes() / get_gpu_dram_gbps() * 1e-6, 0]
     elif isinstance(node.node, ir.ExternKernel):
         cls = node.node.__class__
-        func = kernel_name_to_op.get(
+        func = scheduler.kernel_name_to_op.get(
             getattr(node.node, "python_kernel_name", ""), None
         )
         if func is None:
-            func = kernel_name_to_op.get(
+            func = scheduler.kernel_name_to_op.get(
                 str(getattr(node.node, "op_overload", "")), None
             )
         if func is not None:

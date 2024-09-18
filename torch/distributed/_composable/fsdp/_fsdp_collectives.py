@@ -152,7 +152,6 @@ def read_out(
         for idx, grad in enumerate(padded_size)
     )
     flat_grad_offset = 0
-    reduce_dtype = torch.bfloat16
     for idx in range(len(padded_size)):
         sharded_size = padded_size[idx]
         contiguous_sharded_stride = make_contiguous_strides_for(sharded_size)
@@ -161,7 +160,7 @@ def read_out(
             size=sharded_size,
             stride=contiguous_sharded_stride,
             storage_offset=flat_grad_offset,
-        ).type(reduce_dtype)
+        )
         if new_sharded_grad.size() != out[idx].size():
             out[idx].copy_(new_sharded_grad[rank][0])
         else:
@@ -185,7 +184,6 @@ def chunk_cat(
     simplefsdp: bool = False,
 ) -> torch.Tensor:
     if simplefsdp:
-        tensors = [t.type(torch.bfloat16) for t in tensors]
         chunk_cat_out = torch._chunk_cat(tensors, dim, num_chunks)
         return chunk_cat_out
     else:

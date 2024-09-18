@@ -160,7 +160,7 @@ llMaxBws = [
 ]
 
 
-def estimate_nccl_collective_runtime(node: ir.IRNode, stage="forward") -> float:
+def estimate_nccl_collective_runtime(node: ir.IRNode) -> float:
     """
     Returns estimated NCCL collective runtime in nanoseconds (ns).
 
@@ -258,8 +258,7 @@ def estimate_nccl_collective_runtime(node: ir.IRNode, stage="forward") -> float:
 
     # =============== final result ===============
     transport_ns = tensor_storage_size_GB / bandwidth_GB_per_ns
-    # adjust the estimated communication time by a coefficient
-    return (transport_ns + latency_ns) * simplefsdp.time_coff
+    return transport_ns + latency_ns
 
 
 ################################################################################################################
@@ -267,7 +266,7 @@ def estimate_nccl_collective_runtime(node: ir.IRNode, stage="forward") -> float:
 ################################################################################################################
 
 
-def estimate_bucketed_nccl_collective_runtime(nodes: List["scheduler.BaseSchedulerNode"], stage="forward") -> float:
+def estimate_bucketed_nccl_collective_runtime(nodes: List["scheduler.BaseSchedulerNode"], is_ag=True) -> float:
     # Function to estimate the runtime of bucketed AG/RS
     num_gpus_per_node = 8
     group_size = get_collective_group_size(nodes[0].node)
@@ -356,4 +355,6 @@ def estimate_bucketed_nccl_collective_runtime(nodes: List["scheduler.BaseSchedul
     # =============== final result ===============
     transport_ns = total_tensor_storage_size_bytes / bandwidth_GB_per_ns
     # adjust the estimated communication time by a coefficient
-    return (transport_ns + latency_ns) * simplefsdp.time_coff
+    if is_ag:
+        return (transport_ns + latency_ns) * 1e-6 * simplefsdp.ag_comm_time_multiplier
+    return (transport_ns + latency_ns) * 1e-6 * simplefsdp.rs_comm_time_multiplier

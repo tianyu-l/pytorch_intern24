@@ -1602,7 +1602,7 @@ class Scheduler:
         front_node = None
 
         if config.simplefsdp.bucket_mode == "transformer_block":
-            if config.simplefsdp.pp_degree < 0 and config.simplefsdp.bucket_mode != "none":
+            if config.simplefsdp.pp_degree < 0:
                 # get the first compute node w/o AG in backward graph
                 # it doesn't apply to pp, because the model is partitioned. the get_front_node produces wrong front_node
                 front_node = reorder.get_front_node(self.nodes)
@@ -1623,12 +1623,8 @@ class Scheduler:
             # profile op runtime
             run_time_dict = profile_nodes(self.nodes)
 
-            if self.post_grad_graph_id == 0:
-                is_backward = False
-            else:
-                is_backward = True
-
             # auto-bucket nodes in fwd/bwd graph
+            is_backward = (self.post_grad_graph_id == 1)
             self.nodes = greedy_bucket.bucket_by_greedy(
                 self, self.nodes, run_time_dict, is_backward
             )
