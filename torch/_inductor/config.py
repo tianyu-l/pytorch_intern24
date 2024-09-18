@@ -1040,6 +1040,10 @@ class simplefsdp:
     pp_degree = -1
     device_mesh = None
 
+    time_coff = 1
+    forward_memory_constraint = 320
+    backward_memory_constraint = 320
+
 
 # create a directory containing lots of debug information
 class trace:

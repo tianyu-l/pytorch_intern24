@@ -8,7 +8,7 @@ import sympy
 import torch
 
 from . import ir
-from . import scheduler
+from .config import simplefsdp
 from .utils import get_dtype_size, sympy_product
 from .virtualized import V
 
@@ -160,7 +160,7 @@ llMaxBws = [
 ]
 
 
-def estimate_nccl_collective_runtime(node: ir.IRNode) -> float:
+def estimate_nccl_collective_runtime(node: ir.IRNode, stage="forward") -> float:
     """
     Returns estimated NCCL collective runtime in nanoseconds (ns).
 
@@ -258,7 +258,8 @@ def estimate_nccl_collective_runtime(node: ir.IRNode) -> float:
 
     # =============== final result ===============
     transport_ns = tensor_storage_size_GB / bandwidth_GB_per_ns
-    return transport_ns + latency_ns
+    # adjust the estimated communication time by a coefficient
+    return (transport_ns + latency_ns) * simplefsdp.time_coff
 
 
 ################################################################################################################
@@ -266,9 +267,8 @@ def estimate_nccl_collective_runtime(node: ir.IRNode) -> float:
 ################################################################################################################
 
 
-def estimate_bucked_nccl_collective_runtime(nodes: List["scheduler.BaseSchedulerNode"]) -> float:
-    # Currently assumes each node has 8 gpus. And when >1 node is used, assumes each node uses all 8 gpus.
-    # TODO: Need to find a way to get accurate "gpus per node" and "# nodes" info.
+def estimate_bucketed_nccl_collective_runtime(nodes: List["scheduler.BaseSchedulerNode"], stage="forward") -> float:
+    # Function to estimate the runtime of bucketed AG/RS
     num_gpus_per_node = 8
     group_size = get_collective_group_size(nodes[0].node)
     nNodes = math.ceil(group_size / num_gpus_per_node)
@@ -355,4 +355,5 @@ def estimate_bucked_nccl_collective_runtime(nodes: List["scheduler.BaseScheduler
 
     # =============== final result ===============
     transport_ns = total_tensor_storage_size_bytes / bandwidth_GB_per_ns
-    return transport_ns + latency_ns
+    # adjust the estimated communication time by a coefficient
+    return (transport_ns + latency_ns) * simplefsdp.time_coff

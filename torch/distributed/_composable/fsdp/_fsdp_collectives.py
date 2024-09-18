@@ -185,8 +185,7 @@ def chunk_cat(
     simplefsdp: bool = False,
 ) -> torch.Tensor:
     if simplefsdp:
-        reduce_dtype = torch.bfloat16
-        tensors = [t.type(reduce_dtype) for t in tensors]
+        tensors = [t.type(torch.bfloat16) for t in tensors]
         chunk_cat_out = torch._chunk_cat(tensors, dim, num_chunks)
         return chunk_cat_out
     else:

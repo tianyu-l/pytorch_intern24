@@ -146,7 +146,8 @@ def get_node_type(node: "scheduler.BaseSchedulerNode") -> NodeType:
 
     return _get_ir_node_type(node.node)
 
-def _get_benchmark_runtime(node) -> List[Union[float, float]]:
+
+def _get_benchmark_runtime(node) -> List[float]:
     """
     Returns estimated op runtime in nanoseconds (ns)
     """
@@ -154,7 +155,7 @@ def _get_benchmark_runtime(node) -> List[Union[float, float]]:
     if is_collective(node.node):
         # communication time for AG & RS
         comm_time = estimate_nccl_collective_runtime(node.node)
-        return [comm_time * 2 * 1e-6, 0]
+        return [comm_time * 1e-6, 0]
     elif is_wait(node.node):
         # wait is not profiled in GPU
         return [0, 0]
@@ -228,6 +229,7 @@ def _get_benchmark_runtime(node) -> List[Union[float, float]]:
     else:
         return [0, 0]
 
+
 def _get_runtime_dict(snode: List["scheduler.BaseSchedulerNode"]) -> Dict[str, List[Union[str, float, float]]]:
     total_node = 0
     run_time_dict = {}
@@ -264,6 +266,7 @@ def _get_runtime_dict(snode: List["scheduler.BaseSchedulerNode"]) -> Dict[str, L
                 benchmark_op = _get_benchmark_runtime(n)
                 run_time_dict[n.get_name()] = [buffer_op_name] + benchmark_op
     return run_time_dict
+
 
 def profile_nodes(snode: List["scheduler.BaseSchedulerNode"]) -> Dict[str, List[Union[str, float, float]]]:
     current_rank = dist.get_rank()
