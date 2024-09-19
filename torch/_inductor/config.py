@@ -1044,6 +1044,7 @@ class simplefsdp:
     rs_comm_time_multiplier = 5
     memory_constraint = 320
 
+
 # create a directory containing lots of debug information
 class trace:
     # master switch for all debugging flags below
