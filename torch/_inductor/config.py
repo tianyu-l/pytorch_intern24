@@ -1042,7 +1042,7 @@ class simplefsdp:
 
     ag_comm_time_multiplier = 5
     rs_comm_time_multiplier = 5
-    memory_constraint = 320
+    memory_constraint = 1000
 
 
 # create a directory containing lots of debug information
