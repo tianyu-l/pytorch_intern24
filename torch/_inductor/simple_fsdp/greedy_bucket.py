@@ -165,9 +165,7 @@ def get_greedy_bucket_plan(
         reduce_scatter_list = []
         rs_wait_list = []
         rs_wait_dep_list = []
-        current_rs = (
-            0  # reduce scatter time in step_(i+1), derived from all gather in step_i
-        )
+        current_rs = 0  # reduce scatter time in step_(i+1), derived from all gather in step_i
 
     for idx, node in enumerate(snodes):
         if get_node_type(node) == NodeType.ALL_GATHER:
