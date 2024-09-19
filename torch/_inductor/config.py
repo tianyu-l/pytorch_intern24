@@ -1041,7 +1041,7 @@ class simplefsdp:
     device_mesh = None
 
     ag_comm_time_multiplier = 5
-    rs_comm_time_multiplier = 5
+    rs_comm_time_multiplier = 2.5
     memory_constraint = 1000
 
 
