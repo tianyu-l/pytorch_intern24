@@ -250,10 +250,9 @@ def get_greedy_bucket_plan(
                     )
                     rs_wait_list.extend(collective_info_dict[node].rs_wait)
                     rs_wait_dep_list.extend(collective_info_dict[node].rs_wait_dep)
-                    if len(reduce_scatter_list) > 0:
-                        current_rs = estimate_bucketed_nccl_collective_runtime(
-                            reduce_scatter_list, is_ag=False
-                        )
+                    current_rs = estimate_bucketed_nccl_collective_runtime(
+                        reduce_scatter_list, is_ag=False
+                    )
 
     if len(all_gather_list) > 0:
         merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list)
