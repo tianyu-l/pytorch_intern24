@@ -1042,9 +1042,7 @@ class simplefsdp:
 
     ag_comm_time_multiplier = 5
     rs_comm_time_multiplier = 5
-    forward_memory_constraint = 320
-    backward_memory_constraint = 320
-
+    memory_constraint = 320
 
 # create a directory containing lots of debug information
 class trace:

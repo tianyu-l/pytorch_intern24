@@ -24,7 +24,7 @@ class CollectiveInfo:
     rs_time: float = 0
 
 
-def greedy_check(current_comp, current_mem, node_ag, node_mem, memory_constraint, is_first_ag, current_rs=0):
+def greedy_check(current_comp, current_mem, current_ag, node_mem, memory_constraint, is_first_ag, current_rs=0):
     """
     Check if the current node satisfy the greedy bucketing rule
         Return False: the current node satisfy the greedy rule and should not start a new bucket
@@ -40,7 +40,7 @@ def greedy_check(current_comp, current_mem, node_ag, node_mem, memory_constraint
     if current_mem + node_mem > memory_constraint:
         return True
 
-    if node_ag + current_rs > current_comp:
+    if current_ag + current_rs > current_comp:
         return True
 
     return False
@@ -135,19 +135,17 @@ def get_greedy_bucket_plan(
     compute_list = []
 
     current_comp = 0 # compute time in step_i
-    current_ag = 0 # all gather time in step_i
     current_mem = 0 # memory in step_i
     current_rs = 0 # reduce scatter time in step_i, by default, it is 0 in forward
     next_comp = 0 # compute time in step_(i+1), derived from all gather in step_i
     is_first_ag = True
-    memory_constraint = simplefsdp.forward_memory_constraint
+    memory_constraint = simplefsdp.memory_constraint
 
     if is_backward:
         reduce_scatter_list = []
         rs_wait_list = []
         rs_wait_dep_list = []
         next_rs = 0 # reduce scatter time in step_(i+1), derived from all gather in step_i
-        memory_constraint = simplefsdp.backward_memory_constraint
 
     for idx, node in enumerate(snodes):
         if get_node_type(node) == NodeType.ALL_GATHER:
