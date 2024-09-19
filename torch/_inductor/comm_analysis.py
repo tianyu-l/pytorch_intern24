@@ -1,7 +1,7 @@
 import functools
 import math
-from typing import List
 from enum import IntEnum
+from typing import List
 
 import sympy
 
@@ -266,7 +266,12 @@ def estimate_nccl_collective_runtime(node: ir.IRNode) -> float:
 ################################################################################################################
 
 
-def estimate_bucketed_nccl_collective_runtime(nodes: List["scheduler.BaseSchedulerNode"], is_ag=True) -> float:
+def estimate_bucketed_nccl_collective_runtime(
+    nodes: List["scheduler.BaseSchedulerNode"], is_ag=True
+) -> float:
+    if len(nodes) == 0:
+        return 0
+
     # Function to estimate the runtime of bucketed AG/RS
     num_gpus_per_node = 8
     group_size = get_collective_group_size(nodes[0].node)

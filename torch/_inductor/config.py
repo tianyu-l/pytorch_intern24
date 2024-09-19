@@ -1035,9 +1035,9 @@ class simplefsdp:
     bucket_mode = "none"
     enable_reorder = False
 
-    fsdp_degree = -1
-    tp_degree = -1
-    pp_degree = -1
+    fsdp_degree = 1
+    tp_degree = 1
+    pp_degree = 1
     device_mesh = None
 
     ag_comm_time_multiplier = 5

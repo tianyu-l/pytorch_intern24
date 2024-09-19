@@ -795,6 +795,7 @@ kernel_name_to_op = {
     "aten._scaled_dot_product_flash_attention.default": torch.ops.aten._scaled_dot_product_flash_attention.default,
 }
 
+
 class ExternKernelSchedulerNode(BaseSchedulerNode):
     def debug_str_extra(self) -> str:
         return f"{self.get_name()}.node.kernel = {getattr(self.node, 'python_kernel_name', None)}"
@@ -1602,7 +1603,7 @@ class Scheduler:
         front_node = None
 
         if config.simplefsdp.bucket_mode == "transformer_block":
-            if config.simplefsdp.pp_degree < 0:
+            if config.simplefsdp.pp_degree <= 1:
                 # get the first compute node w/o AG in backward graph
                 # it doesn't apply to pp, because the model is partitioned. the get_front_node produces wrong front_node
                 front_node = reorder.get_front_node(self.nodes)
@@ -1624,7 +1625,7 @@ class Scheduler:
             run_time_dict = profile_nodes(self.nodes)
 
             # auto-bucket nodes in fwd/bwd graph
-            is_backward = (self.post_grad_graph_id == 1)
+            is_backward = self.post_grad_graph_id == 1
             self.nodes = greedy_bucket.bucket_by_greedy(
                 self, self.nodes, run_time_dict, is_backward
             )

@@ -1,5 +1,5 @@
-from collections import defaultdict
 import time
+from collections import defaultdict
 from enum import IntEnum
 from typing import Dict, List, Set, Tuple, Union
 
@@ -10,8 +10,8 @@ from torch.utils._mode_utils import no_dispatch
 
 from .. import ir, scheduler
 from ..config import simplefsdp
-from ..utils import is_collective, is_wait, get_gpu_dram_gbps
-from ..comm_analysis import estimate_nccl_collective_runtime
+from ..utils import get_gpu_dram_gbps, is_collective, is_wait
+
 
 class NodeType(IntEnum):
     ALL_GATHER = 0
@@ -19,6 +19,7 @@ class NodeType(IntEnum):
     REDUCE_SCATTER = 2
     AG_WAIT = 3
     RS_WAIT = 4
+
 
 def compute_node_users(
     snodes: List["scheduler.BaseSchedulerNode"],
@@ -62,7 +63,7 @@ def _check_ir_node_fsdp(ir_node: "ir.Operation") -> bool:
     """
     Determine if the AG/RS node is for FSDP or TP
     """
-    if simplefsdp.tp_degree < 0:
+    if simplefsdp.tp_degree <= 1:
         return True
 
     is_fsdp = False
@@ -143,9 +144,7 @@ def _get_benchmark_runtime(node) -> List[float]:
     """
     # Communication kernel benchmark
     if is_collective(node.node):
-        # communication time for AG & RS
-        comm_time = estimate_nccl_collective_runtime(node.node)
-        return [comm_time * 1e-6, 0]
+        return [0, 0]
     elif is_wait(node.node):
         # wait is not profiled in GPU
         return [0, 0]
@@ -171,14 +170,11 @@ def _get_benchmark_runtime(node) -> List[float]:
                 ir.ir_node_to_tensor(input, guard_shape=False)
                 for input in node.node.inputs
             ]
-            flat_args, args_spec = pytree.tree_flatten(
-                (fake_inputs, node.node.kwargs)
-            )
-            new_kwargs = node.node.fill_non_provided_args(
-                fake_inputs, node.node.kwargs
-            )
+            flat_args, args_spec = pytree.tree_flatten((fake_inputs, node.node.kwargs))
+            new_kwargs = node.node.fill_non_provided_args(fake_inputs, node.node.kwargs)
 
             with no_dispatch():
+
                 def to_real_tensor(e):
                     if not isinstance(e, torch.Tensor):
                         return e
@@ -220,7 +216,9 @@ def _get_benchmark_runtime(node) -> List[float]:
         return [0, 0]
 
 
-def _get_runtime_dict(snode: List["scheduler.BaseSchedulerNode"]) -> Dict[str, List[Union[str, float, float]]]:
+def _get_runtime_dict(
+    snode: List["scheduler.BaseSchedulerNode"],
+) -> Dict[str, List[Union[str, float, float]]]:
     total_node = 0
     run_time_dict = {}
     for n in snode:
@@ -258,10 +256,12 @@ def _get_runtime_dict(snode: List["scheduler.BaseSchedulerNode"]) -> Dict[str, L
     return run_time_dict
 
 
-def profile_nodes(snode: List["scheduler.BaseSchedulerNode"]) -> Dict[str, List[Union[str, float, float]]]:
+def profile_nodes(
+    snode: List["scheduler.BaseSchedulerNode"],
+) -> Dict[str, List[Union[str, float, float]]]:
     current_rank = dist.get_rank()
     objects = [None]
-    if simplefsdp.pp_degree < 0:
+    if simplefsdp.pp_degree <= 1:
         if current_rank == 0:
             run_time_dict = _get_runtime_dict(snode)
             objects = [run_time_dict]
@@ -274,16 +274,14 @@ def profile_nodes(snode: List["scheduler.BaseSchedulerNode"]) -> Dict[str, List[
         send_runtime_rank = []
 
         for broadcast_list in broadcast_lists:
-            if simplefsdp.tp_degree < 0:
+            if simplefsdp.tp_degree <= 1:
                 source_rank = broadcast_list[0]
                 flatten_list = broadcast_list
             else:
                 source_rank = broadcast_list[0][0]
                 flatten_list = [i for sublist in broadcast_list for i in sublist]
 
-            rank_group_dict[source_rank] = dist.new_group(
-                ranks=flatten_list
-            )
+            rank_group_dict[source_rank] = dist.new_group(ranks=flatten_list)
             send_runtime_rank.append(source_rank)
             for subnode in flatten_list:
                 receive_runtime_dict[subnode] = source_rank
