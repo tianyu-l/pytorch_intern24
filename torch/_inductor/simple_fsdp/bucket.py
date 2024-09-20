@@ -40,6 +40,7 @@ def merge_allgather(
     inp_split_flatten = [math.prod(cbuf.get_layout().size) for cbuf in copy_in_inputs]
     inp_split_sizes = inp_split_flatten
     all_gather_input_numel = sum(inp_split_flatten)
+    # NOTE: placeholder to reuse FSDP2's API, but will not take effect. (dtype & device)
     dtype = torch.bfloat16
     device = torch.device("cuda")
     copy_in_output, _ = ir.FallbackKernel.create(
@@ -98,7 +99,7 @@ def merge_ag_wait(
         tuple(math.prod(n.node.get_layout().size) for n in original_all_gather_list),
         dim=1,
         out=[n.node for n in original_all_gather_list],
-        world_size=simplefsdp.fsdp_degree,
+        world_size=simplefsdp.degree,
         simplefsdp=True,
     )
     copy_out_snode = create_scheduler_node_from_ir_node(sched, copy_out)
@@ -132,7 +133,7 @@ def merge_reducescatter(
         torch.ops.fsdp.chunk_cat.default,
         copy_in_inputs,
         dim=0,
-        num_chunks=simplefsdp.fsdp_degree,
+        num_chunks=simplefsdp.degree,
         simplefsdp=True,
     )
     copy_in_snode = create_scheduler_node_from_ir_node(sched, V.graph.operations[-2])

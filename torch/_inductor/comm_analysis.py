@@ -1,12 +1,14 @@
 import functools
 import math
 from enum import IntEnum
+from typing import List
 
 import sympy
 
 import torch
 
 from . import ir
+from .config import simplefsdp
 from .utils import get_dtype_size, sympy_product
 from .virtualized import V
 
@@ -262,3 +264,102 @@ def estimate_nccl_collective_runtime(node: ir.IRNode) -> float:
 ################################################################################################################
 # The above code and constants are adapted from https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc #
 ################################################################################################################
+
+
+def estimate_bucketed_nccl_collective_runtime(
+    nodes: List["scheduler.BaseSchedulerNode"], is_ag=True
+) -> float:
+    if len(nodes) == 0:
+        return 0
+
+    # Function to estimate the runtime of bucketed AG/RS
+    num_gpus_per_node = 8
+    group_size = get_collective_group_size(nodes[0].node)
+    nNodes = math.ceil(group_size / num_gpus_per_node)
+    nRanks = group_size  # this is total # of gpus globally that participate in this collective op
+
+    if nRanks <= 1:
+        return 0
+
+    # Assumes ring algorithm
+    nccl_algo = NCCL_ALGO.RING
+    nccl_proto = NCCL_PROTO.LL
+    coll = get_collective_type(nodes[0].node)
+
+    # =============== bandwidth computation ===============
+    # First compute bandwidth in GB/s; then at the end, convert it to GB/ns
+
+    bwIntra = torch._inductor.config.intra_node_bw
+    bwInter = torch._inductor.config.inter_node_bw
+
+    compCapIndex = get_gpu_type()
+    index2 = nNodes - 1 if nNodes <= 2 else 2
+    # LL: for single node, we look at GPU type; for multi-node, we look at CPU type
+    index1 = compCapIndex if nNodes == 1 else 0
+    llMaxBw = llMaxBws[index1][index2]
+
+    # NOTE: each step of ring algorithm is synchronized,
+    # and is bottlenecked by the slowest link which is the inter-node interconnect.
+    # hence when nNodes >= 2, bw is inter-node bandwidth.
+    # NOTE: the original code in https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc
+    # have this as `if nNodes <= 2` which seems wrong. Corrected it here.
+    bw = bwIntra if nNodes == 1 else bwInter
+    nChannels = 2  # Assume # channels is 2
+    busBw = nChannels * bw
+
+    # Various model refinements
+    busBw = min(
+        llMaxBw,
+        busBw
+        * (1.0 / 4.0 if (nNodes > 1 or coll == NCCL_COLL.ALL_REDUCE) else 1.0 / 3.0),
+    )
+
+    if coll == NCCL_COLL.ALL_REDUCE:
+        nsteps = 2 * (nRanks - 1)
+    elif coll in (NCCL_COLL.REDUCE_SCATTER, NCCL_COLL.ALL_GATHER):
+        nsteps = nRanks - 1
+
+    # Convert bus BW to algorithm BW (tensor bytes / algoBW = actual execution time)
+    ratio = (1.0 * nRanks) / nsteps  # type: ignore[possibly-undefined]
+    bandwidth = busBw * ratio
+    # Convert GB/s to GB/ns
+    bandwidth_GB_per_ns = bandwidth / 1e9
+
+    # =============== latency computation ===============
+    intraHw = NCCL_HW.NVLINK
+
+    if coll == NCCL_COLL.ALL_REDUCE:
+        if nNodes > 1:
+            nInterSteps = 2 * nNodes
+        else:
+            nInterSteps = 0
+    elif coll in (NCCL_COLL.REDUCE_SCATTER, NCCL_COLL.ALL_GATHER):
+        nInterSteps = nNodes - 1
+
+    # First compute latency in us; then at the end, convert it to ns
+    latency = baseLat[nccl_algo][nccl_proto]
+    intraLat = hwLat[intraHw][nccl_algo][nccl_proto]
+    interLat = hwLat[NCCL_HW.NET][nccl_algo][nccl_proto]
+
+    # Inter-node rings still have to launch nsteps * net overhead.
+    netOverhead = 0.0
+    if nNodes > 1:
+        netOverhead = 1.0  # getNetOverhead(comm);
+    intraLat = max(intraLat, netOverhead)
+    latency += (nsteps - nInterSteps) * intraLat + nInterSteps * interLat  # type: ignore[possibly-undefined]
+    # Convert us to ns
+    latency_ns = latency * 1e3
+
+    total_tensor_storage_size_bytes = 0
+    for node in nodes:
+        tensor_storage_size_bytes = get_collective_input_size_bytes(node.node)
+        # Convert bytes to GB
+        tensor_storage_size_GB = tensor_storage_size_bytes / 1024 / 1024 / 1024
+        total_tensor_storage_size_bytes += tensor_storage_size_GB
+
+    # =============== final result ===============
+    transport_ns = total_tensor_storage_size_bytes / bandwidth_GB_per_ns
+    # adjust the estimated communication time by a coefficient
+    if is_ag:
+        return (transport_ns + latency_ns) * 1e-6 * simplefsdp.ag_comm_time_multiplier
+    return (transport_ns + latency_ns) * 1e-6 * simplefsdp.rs_comm_time_multiplier

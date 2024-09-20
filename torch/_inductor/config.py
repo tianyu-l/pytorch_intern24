@@ -1035,9 +1035,14 @@ class simplefsdp:
     bucket_mode = "none"
     enable_reorder = False
 
-    fsdp_degree = -1
-    tp_degree = -1
-    pp_degree = -1
+    degree = 1
+    tp_enabled = False
+    pp_enabled = False
+    device_mesh = None
+
+    ag_comm_time_multiplier = 5
+    rs_comm_time_multiplier = 2.5
+    memory_constraint = 1000
 
 
 # create a directory containing lots of debug information

@@ -45,7 +45,8 @@ from .comm_analysis import estimate_nccl_collective_runtime
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .ir import ComputedBuffer, MultiOutput, MultiOutputLayout
 from .runtime.runtime_utils import green_text, red_text
-from .simple_fsdp import reorder, transformer_block_bucket
+from .simple_fsdp import greedy_bucket, reorder, transformer_block_bucket
+from .simple_fsdp.utils import profile_nodes
 from .sizevars import SimplifyIndexing
 from .utils import (
     cache_on_self,
@@ -790,6 +791,8 @@ kernel_name_to_op = {
     "extern_kernels.mm": torch.ops.aten.mm,
     "extern_kernels.bmm": torch.ops.aten.bmm,
     "extern_kernels.addmm": torch.ops.aten.addmm,
+    "aten.mul.Tensor": torch.ops.aten.mul.Tensor,
+    "aten._scaled_dot_product_flash_attention.default": torch.ops.aten._scaled_dot_product_flash_attention.default,
 }
 
 
@@ -1598,8 +1601,9 @@ class Scheduler:
         self.nodes = self.fuse_nodes(self.nodes)
 
         front_node = None
+
         if config.simplefsdp.bucket_mode == "transformer_block":
-            if config.simplefsdp.pp_degree < 0:
+            if not config.simplefsdp.pp_enabled:
                 # get the first compute node w/o AG in backward graph
                 # it doesn't apply to pp, because the model is partitioned. the get_front_node produces wrong front_node
                 front_node = reorder.get_front_node(self.nodes)
@@ -1615,6 +1619,16 @@ class Scheduler:
                 self.nodes = transformer_block_bucket.bucket_reduce_scatter_by_block(
                     self, self.nodes
                 )
+
+        elif config.simplefsdp.bucket_mode == "greedy":
+            # profile op runtime
+            run_time_dict = profile_nodes(self.nodes)
+
+            # auto-bucket nodes in fwd/bwd graph
+            is_backward = self.post_grad_graph_id == 1
+            self.nodes = greedy_bucket.bucket_by_greedy(
+                self, self.nodes, run_time_dict, is_backward
+            )
 
         if config.simplefsdp.enable_reorder:
             if self.post_grad_graph_id == 0:
