@@ -1603,7 +1603,7 @@ class Scheduler:
         front_node = None
 
         if config.simplefsdp.bucket_mode == "transformer_block":
-            if config.simplefsdp.pp_degree <= 1:
+            if not config.simplefsdp.pp_enabled:
                 # get the first compute node w/o AG in backward graph
                 # it doesn't apply to pp, because the model is partitioned. the get_front_node produces wrong front_node
                 front_node = reorder.get_front_node(self.nodes)

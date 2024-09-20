@@ -63,7 +63,7 @@ def _check_ir_node_fsdp(ir_node: "ir.Operation") -> bool:
     """
     Determine if the AG/RS node is for FSDP or TP
     """
-    if simplefsdp.tp_degree <= 1:
+    if not simplefsdp.tp_enabled:
         return True
 
     is_fsdp = False
@@ -144,6 +144,8 @@ def _get_benchmark_runtime(node) -> List[float]:
     """
     # Communication kernel benchmark
     if is_collective(node.node):
+        # the AG/RS's communication time will be dynamically re-estimated in greedy bucketing algorithm
+        # we skip the estimation here to improve efficiency
         return [0, 0]
     elif is_wait(node.node):
         # wait is not profiled in GPU
@@ -261,7 +263,7 @@ def profile_nodes(
 ) -> Dict[str, List[Union[str, float, float]]]:
     current_rank = dist.get_rank()
     objects = [None]
-    if simplefsdp.pp_degree <= 1:
+    if not simplefsdp.pp_enabled:
         if current_rank == 0:
             run_time_dict = _get_runtime_dict(snode)
             objects = [run_time_dict]
@@ -274,7 +276,7 @@ def profile_nodes(
         send_runtime_rank = []
 
         for broadcast_list in broadcast_lists:
-            if simplefsdp.tp_degree <= 1:
+            if not simplefsdp.tp_enabled:
                 source_rank = broadcast_list[0]
                 flatten_list = broadcast_list
             else:
