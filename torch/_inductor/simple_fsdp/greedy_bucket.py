@@ -68,7 +68,7 @@ def get_collective_info(
     # pick up the computes that don't have corresponding all_gather
     for node in snodes:
         users_type = [get_node_type(i) for i in list(node_users[node])]
-        if NodeType.ALL_GATHER in users_type:
+        if NodeType.ALL_GATHER in users_type or get_node_type(node) == NodeType.ALL_GATHER:
             break
         front_nodes.append(node)
 
