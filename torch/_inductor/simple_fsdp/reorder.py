@@ -33,8 +33,9 @@ def reorder_all_gather(
             # gather i-th all gather node and its dependencies
             all_gather_list.append(node)
             inverse_user = list(inverse_users[node])
-            if len(inverse_user) > 0:
+            while len(inverse_user) > 0:
                 all_gather_list.extend(inverse_user)
+                inverse_user = list(inverse_users[inverse_user[0]])
         elif node_type == NodeType.AG_WAIT:
             if (
                 not all_gather_before_last_wait
