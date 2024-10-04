@@ -1,5 +1,4 @@
 import time
-import itertools
 from collections import defaultdict
 from enum import IntEnum
 from typing import Dict, List, Set, Tuple, Union
@@ -266,7 +265,8 @@ def profile_nodes(
     objects = [None]
     run_time_dict = _get_runtime_dict(snode)
     if not simplefsdp.pp_enabled:
-        if current_rank == 0:
+        send_runtime_rank = [0]
+        if current_rank in send_runtime_rank:
             objects = [run_time_dict]
         dist.broadcast_object_list(objects, src=0)
     else:
@@ -298,14 +298,14 @@ def profile_nodes(
         )
     assert objects[0] is not None
 
-    if current_rank != 0:
-        obj_dict = objects[0]
-        obj_dict = [[k, v] for k, v in obj_dict.items() if 'constant_pad_nd' not in v[0]]
+    if current_rank not in send_runtime_rank:
+        obj_dict = [
+            [k, v] for k, v in objects[0].items() if "constant_pad_nd" not in v[0]
+        ]
         idx = 0
         for run_key, run_value in run_time_dict.items():
-            if 'constant_pad_nd' not in run_value[0] :
+            if "constant_pad_nd" not in run_value[0]:
                 run_time_dict[run_key][1:] = obj_dict[idx][1][1:]
-                
                 idx = idx + 1
             else:
                 continue
