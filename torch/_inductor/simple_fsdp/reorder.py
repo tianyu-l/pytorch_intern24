@@ -5,7 +5,6 @@ from typing import Dict, List, Optional
 from .. import scheduler
 from .utils import compute_node_users, get_node_type, NodeType
 
-
 def reorder_all_gather(
     snodes: List["scheduler.BaseSchedulerNode"],
     all_gather_before_last_wait: Optional[bool] = True,
@@ -46,7 +45,9 @@ def reorder_all_gather(
 
             result_list.append(node)
 
-            if all_gather_before_last_wait and len(all_gather_list) > 0:
+            if (all_gather_before_last_wait 
+                and len(all_gather_list) > 0
+            ):
                 assert node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
                 # move i-th all gather node and its dependencies before (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
