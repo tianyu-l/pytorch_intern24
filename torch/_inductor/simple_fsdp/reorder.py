@@ -45,7 +45,8 @@ def reorder_all_gather(
 
             result_list.append(node)
 
-            if (all_gather_before_last_wait 
+            if (
+                all_gather_before_last_wait 
                 and len(all_gather_list) > 0
             ):
                 assert node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
