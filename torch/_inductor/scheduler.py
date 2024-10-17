@@ -1600,13 +1600,18 @@ class Scheduler:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
         self.nodes = self.fuse_nodes(self.nodes)
 
+        import time
+        start_time = time.time()
         front_node = None
 
         if config.simplefsdp.bucket_mode == "transformer_block":
             if not config.simplefsdp.pp_enabled:
                 # get the first compute node w/o AG in backward graph
-                # it doesn't apply to pp, because the model is partitioned. the get_front_node produces wrong front_node
                 front_node = reorder.get_front_node(self.nodes)
+            else:
+                # if pp is enable, we only reorder the last graph
+                if torch.cuda.current_device() in config.simplefsdp.device_mesh[-1]:
+                    front_node = reorder.get_front_node(self.nodes)
 
             # bucket all gather
             self.nodes = transformer_block_bucket.bucket_all_gather_by_block(
@@ -1630,6 +1635,8 @@ class Scheduler:
                 self, self.nodes, run_time_dict, is_backward
             )
 
+        end_time1 = time.time()
+        print("bucket time: ", end_time1 - start_time)
         if config.simplefsdp.enable_reorder:
             if self.post_grad_graph_id == 0:
                 # reorder forward graph
@@ -1642,7 +1649,8 @@ class Scheduler:
                     self.nodes, all_gather_before_last_wait=False
                 )
                 self.nodes = reorder.reorder_reduce_scatter(self.nodes, front_node)
-
+        end_time2 = time.time()
+        print("reorder time: ", end_time2 - end_time1)
         self.finalize_multi_template_buffers()
         if config.reorder_for_compute_comm_overlap:
             self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)

@@ -1,3 +1,4 @@
+import re
 from typing import List
 
 from .. import scheduler
@@ -41,13 +42,12 @@ def bucket_all_gather_by_block(
             # bucketing in the block boundary
             assert len(all_gather_list) == len(ag_wait_list)
             merged_all_gather, ag_ir_node = merge_allgather(
-                sched, all_gather_list
+                sched, all_gather_list, all_gather_dep_list
             )
             merged_wait = merge_ag_wait(
                 sched, ag_wait_list, all_gather_list, ag_ir_node
             )
-
-            for n in all_gather_dep_list + [merged_all_gather, merged_wait]:
+            for n in [merged_all_gather, merged_wait]:
                 if n not in result_list:
                     result_list.append(n)
             compute_list = [i for i in compute_list if i not in all_gather_dep_list]
@@ -77,11 +77,11 @@ def bucket_all_gather_by_block(
     assert len(all_gather_list) == len(ag_wait_list)
 
     if len(all_gather_list) > 0:
-        merged_all_gather, ag_ir_node = merge_allgather(sched, all_gather_list)
+        merged_all_gather, ag_ir_node = merge_allgather(sched, all_gather_list, all_gather_dep_list)
         merged_wait = merge_ag_wait(
             sched, ag_wait_list, all_gather_list, ag_ir_node
         )
-        for n in all_gather_dep_list + [merged_all_gather, merged_wait]:
+        for n in [merged_all_gather, merged_wait]:
             if n not in result_list:
                 result_list.append(n)
     compute_list = [i for i in compute_list if i not in all_gather_dep_list]
@@ -128,15 +128,17 @@ def bucket_reduce_scatter_by_block(
             (merged_reduce_scatter, rs_ir_node, copy_in_size) = merge_reducescatter(
                 sched, reduce_scatter_list
             )
+            rs_wait_dep_list = [r for r in rs_wait_dep_list if r not in result_list]
             merged_wait = merge_rs_wait(
                 sched,
                 rs_wait_list,
                 reduce_scatter_list,
                 rs_ir_node,
                 copy_in_size,
+                rs_wait_dep_list
             )
 
-            for n in [merged_reduce_scatter, merged_wait] + rs_wait_dep_list:
+            for n in [merged_reduce_scatter, merged_wait]:
                 if n not in result_list:
                     result_list.append(n)
 
@@ -168,14 +170,16 @@ def bucket_reduce_scatter_by_block(
         (merged_reduce_scatter, rs_ir_node, copy_in_size) = merge_reducescatter(
             sched, reduce_scatter_list
         )
+        rs_wait_dep_list = [r for r in rs_wait_dep_list if r not in result_list]
         merged_wait = merge_rs_wait(
             sched,
             rs_wait_list,
             reduce_scatter_list,
             rs_ir_node,
             copy_in_size,
+            rs_wait_dep_list
         )
-        for n in [merged_reduce_scatter, merged_wait] + rs_wait_dep_list:
+        for n in [merged_reduce_scatter, merged_wait]:
             if n not in result_list:
                 result_list.append(n)
 
@@ -233,19 +237,20 @@ def get_block_level(node: "scheduler.BaseSchedulerNode") -> str:
     node_origin_list = []
     node_origin_list += node.node.origins
     module_list = []
+    pattern = r"_modules\['([^']+)'\]"
     for n in node_origin_list:
         module_stack = n.meta.get("nn_module_stack", {})
         module_list_meta = list(module_stack.values())
-        if module_stack != {}:
-            layer_info, block_info = module_list_meta[0]
-            if "_checkpoint_wrapped_module" in layer_info:
-                if len(module_list_meta) > 1:
-                    layer_info, block_info = module_list_meta[1]
-                    layer_info = layer_info.replace("_modules['_checkpoint_wrapped_module'].", "")
-                else:
-                    layer_info = ""
-            module_list.append(layer_info)
-    
+        current_module_list = [""]
+        while len(module_list_meta) > 1:
+            module_info, block_info = module_list_meta.pop(0)
+            module_info = re.findall(pattern, module_info)
+            module_info = ".".join(module_info)
+            current_module_list.append(module_info)
+            if "layers." in module_info:
+                break
+        module_list.append(current_module_list[-1])
+            
     if len(module_list) > 0:
         module_list.sort()
         return max(module_list, key=module_list.count)

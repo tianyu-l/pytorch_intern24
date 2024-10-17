@@ -1,3 +1,4 @@
+import re
 import time
 from collections import defaultdict
 from enum import IntEnum
@@ -298,17 +299,21 @@ def profile_nodes(
         )
     assert objects[0] is not None
 
+    # use pattern matching to filter standalone constant_pad_nd node, that didn't fuse with other ops
+    pattern = r'^constant_pad_nd_\d+$'
     if current_rank not in send_runtime_rank:
         obj_dict = [
-            [k, v] for k, v in objects[0].items() if "constant_pad_nd" not in v[0]
+            [k, v] for k, v in objects[0].items() if not re.match(pattern, v[0])
         ]
         idx = 0
         for run_key, run_value in run_time_dict.items():
-            if "constant_pad_nd" not in run_value[0]:
+            if not re.match(pattern, run_value[0]):
+                # if current node is not a standalone constant_pad_nd node
+                # update current rank's runtime dict with the broadcasted runtime dict
                 run_time_dict[run_key][1:] = obj_dict[idx][1][1:]
                 idx = idx + 1
             else:
-                continue
+               continue
     else:
         obj_dict = objects[0]
 
