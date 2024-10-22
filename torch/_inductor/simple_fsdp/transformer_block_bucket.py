@@ -19,7 +19,9 @@ def bucket_all_gather_by_block(
     node_block_list = []
     last_module = ""
     for node in snodes:
-        if isinstance(node, scheduler.FusedSchedulerNode) or isinstance(node, scheduler.GroupedSchedulerNode):
+        if isinstance(node, scheduler.FusedSchedulerNode) or isinstance(
+            node, scheduler.GroupedSchedulerNode
+        ):
             node_module = get_block_level(node.snodes[0])
         else:
             node_module = get_block_level(node)
@@ -77,10 +79,10 @@ def bucket_all_gather_by_block(
     assert len(all_gather_list) == len(ag_wait_list)
 
     if len(all_gather_list) > 0:
-        merged_all_gather, ag_ir_node = merge_allgather(sched, all_gather_list, all_gather_dep_list)
-        merged_wait = merge_ag_wait(
-            sched, ag_wait_list, all_gather_list, ag_ir_node
+        merged_all_gather, ag_ir_node = merge_allgather(
+            sched, all_gather_list, all_gather_dep_list
         )
+        merged_wait = merge_ag_wait(sched, ag_wait_list, all_gather_list, ag_ir_node)
         for n in [merged_all_gather, merged_wait]:
             if n not in result_list:
                 result_list.append(n)
@@ -103,7 +105,9 @@ def bucket_reduce_scatter_by_block(
     node_block_list = []
     last_module = ""
     for node in snodes:
-        if isinstance(node, scheduler.FusedSchedulerNode) or isinstance(node, scheduler.GroupedSchedulerNode):
+        if isinstance(node, scheduler.FusedSchedulerNode) or isinstance(
+            node, scheduler.GroupedSchedulerNode
+        ):
             node_module = get_block_level(node.snodes[0])
         else:
             node_module = get_block_level(node)
@@ -135,7 +139,7 @@ def bucket_reduce_scatter_by_block(
                 reduce_scatter_list,
                 rs_ir_node,
                 copy_in_size,
-                rs_wait_dep_list
+                rs_wait_dep_list,
             )
 
             for n in [merged_reduce_scatter, merged_wait]:
@@ -158,10 +162,7 @@ def bucket_reduce_scatter_by_block(
             rs_wait_dep_list.extend(list(node_users[node]))
         else:
             # we do not bucket other nodes
-            if (
-                node not in result_list
-                and node not in rs_wait_dep_list
-            ):
+            if node not in result_list and node not in rs_wait_dep_list:
                 result_list.append(node)
         last_module = current_module
     assert len(reduce_scatter_list) == len(rs_wait_list)
@@ -177,7 +178,7 @@ def bucket_reduce_scatter_by_block(
             reduce_scatter_list,
             rs_ir_node,
             copy_in_size,
-            rs_wait_dep_list
+            rs_wait_dep_list,
         )
         for n in [merged_reduce_scatter, merged_wait]:
             if n not in result_list:
