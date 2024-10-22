@@ -249,8 +249,8 @@ def get_block_level(node: "scheduler.BaseSchedulerNode") -> str:
             current_module_list.append(module_info)
             if "layers." in module_info:
                 break
-        module_list.append(current_module_list[-1])
-            
+        if current_module_list[-1] != "":
+            module_list.append(current_module_list[-1])
     if len(module_list) > 0:
         module_list.sort()
         return max(module_list, key=module_list.count)
