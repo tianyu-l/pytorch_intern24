@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 # pyre-strict
 from typing import Dict, List, Optional
+from collections import defaultdict
 
 from .. import scheduler
 from .utils import compute_node_users, get_node_type, NodeType
@@ -33,13 +34,11 @@ def reorder_all_gather(
             # gather i-th all gather node and its dependencies
             all_gather_list.append(node)
             inverse_user = list(inverse_users[node])
-            if len(inverse_user) > 0:
+            while len(inverse_user) > 0:
                 all_gather_list.extend(inverse_user)
+                inverse_user = list(inverse_users[inverse_user[0]])
         elif node_type == NodeType.AG_WAIT:
-            if (
-                not all_gather_before_last_wait
-                and len(all_gather_list) > 0
-            ):
+            if not all_gather_before_last_wait and len(all_gather_list) > 0:
                 assert node_to_type[snodes[idx + 1]] == NodeType.ALL_GATHER
                 # move i-th all gather node and its dependencies after (i-1)-th wait node (bc this is a reverse list)
                 result_list.extend(all_gather_list)
@@ -73,11 +72,14 @@ def reorder_reduce_scatter(
     result_list: List[scheduler.BaseSchedulerNode] = []
     wait_list: List[scheduler.BaseSchedulerNode] = []
     node_to_type: Dict[scheduler.BaseSchedulerNode, int] = {}
+    rs_wait_dep_dict: Dict[scheduler.BaseSchedulerNode, int] = defaultdict(int)
     inverse_users, node_users = compute_node_users(snodes)
-    types = []
+
     for node in snodes:
         node_to_type[node] = get_node_type(node)
-        types.append(get_node_type(node))
+        if node_to_type[node] == NodeType.RS_WAIT:
+            for n in node_users[node]:
+                rs_wait_dep_dict[n] += 1
 
     for idx, node in enumerate(snodes):
         node_type = node_to_type[node]
@@ -88,7 +90,12 @@ def reorder_reduce_scatter(
             assert node_to_type[snodes[idx - 1]] == NodeType.REDUCE_SCATTER
             # gather wait node after reduce scatter
             wait_list.append(node)
-            wait_list.extend(node_users[node])
+            # an operation might depend on multiple rs_wait nodes
+            # we use an counter, and only add the dep node to the last rs_wait
+            for n in node_users[node]:
+                rs_wait_dep_dict[n] -= 1
+                if rs_wait_dep_dict[n] == 0:
+                    wait_list.append(n)
         elif node_type == NodeType.REDUCE_SCATTER:
             if len(wait_list) > 0:
                 # move the i-th wait node before (i+1)-th reduce scatter node

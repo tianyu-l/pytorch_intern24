@@ -687,6 +687,8 @@ def fx_codegen_and_compile(
     layout_opt: Optional[bool] = None,
     extern_node_serializer: Optional[Callable[[List[ExternKernelNode]], Any]] = None,
 ) -> Union[CompiledFxGraph, str]:
+    import time
+    time1 = time.time()
     if is_tf32_warning_applicable(gm):
         _warn_tf32_disabled()
 
@@ -898,6 +900,8 @@ def fx_codegen_and_compile(
                 counters["inductor"] - inductor_counters,
             )
 
+    time2 = time.time()
+    print(f"compile_fx_inner time: {time2 - time1}")
     return compiled_graph
 
 

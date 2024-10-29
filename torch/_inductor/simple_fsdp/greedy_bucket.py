@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union
+from collections import defaultdict
 
 from .. import scheduler
 from ..comm_analysis import estimate_bucketed_nccl_collective_runtime
@@ -64,6 +65,7 @@ def get_collective_info(
     front_nodes = []
     all_gather = None
     collective_info_dict = {}
+    rs_wait_dep_dict: Dict[scheduler.BaseSchedulerNode, int] = defaultdict(int)
 
     # pick up the computes that don't have corresponding all_gather
     for node in snodes:
@@ -71,6 +73,12 @@ def get_collective_info(
         if NodeType.ALL_GATHER in users_type or get_node_type(node) == NodeType.ALL_GATHER:
             break
         front_nodes.append(node)
+
+    if is_backward:
+        for node in snodes:
+            if get_node_type(node) == NodeType.RS_WAIT:
+                for n in node_users[node]:
+                    rs_wait_dep_dict[n] += 1
 
     for node in snodes[len(front_nodes) :]:
         if node.get_name() in run_time_dict:
@@ -118,9 +126,11 @@ def get_collective_info(
 
             if get_node_type(node) == NodeType.RS_WAIT:
                 collective_info_dict[all_gather].rs_wait.append(node)
-                collective_info_dict[all_gather].rs_wait_dep.extend(
-                    list(node_users[node])
-                )
+                # a dep node can dependent on multiple rs_wait, we only bucket the dep node with the last rs_wait
+                for n in list(node_users[node]):
+                    rs_wait_dep_dict[n] -= 1
+                    if rs_wait_dep_dict[n] == 0:
+                        collective_info_dict[all_gather].rs_wait_dep.append(n)
 
     # make sure all nodes are indexed in collective_info_dict
     count = 0
@@ -182,11 +192,11 @@ def get_greedy_bucket_plan(
             ):
                 # merge all_gather
                 assert len(all_gather_list) > 0
-                merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list)
+                merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list, ag_inv_dep_list)
                 merged_ag_wait = merge_ag_wait(
                     sched, ag_wait_list, all_gather_list, ag_buffer
                 )
-                for n in ag_inv_dep_list + [merged_all_gather, merged_ag_wait]:
+                for n in [merged_all_gather, merged_ag_wait]:
                     if n not in result_list:
                         result_list.append(n)
                 compute_list = [i for i in compute_list if i not in result_list]
@@ -203,9 +213,10 @@ def get_greedy_bucket_plan(
                         reduce_scatter_list,
                         rs_buffer,
                         copy_in_size,
+                        rs_wait_dep_list
                     )
 
-                    for n in [merged_reduce_scatter, merged_rs_wait] + rs_wait_dep_list:
+                    for n in [merged_reduce_scatter, merged_rs_wait]:
                         if n not in result_list:
                             result_list.append(n)
 
@@ -253,9 +264,9 @@ def get_greedy_bucket_plan(
                     )
 
     if len(all_gather_list) > 0:
-        merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list)
+        merged_all_gather, ag_buffer = merge_allgather(sched, all_gather_list, ag_inv_dep_list)
         merged_ag_wait = merge_ag_wait(sched, ag_wait_list, all_gather_list, ag_buffer)
-        for n in ag_inv_dep_list + [merged_all_gather, merged_ag_wait]:
+        for n in [merged_all_gather, merged_ag_wait]:
             if n not in result_list:
                 result_list.append(n)
     compute_list = [i for i in compute_list if i not in result_list]
@@ -267,10 +278,10 @@ def get_greedy_bucket_plan(
             sched, reduce_scatter_list
         )
         merged_rs_wait = merge_rs_wait(
-            sched, rs_wait_list, reduce_scatter_list, rs_buffer, copy_in_size
+            sched, rs_wait_list, reduce_scatter_list, rs_buffer, copy_in_size, rs_wait_dep_list
         )
 
-        for n in [merged_reduce_scatter, merged_rs_wait] + rs_wait_dep_list:
+        for n in [merged_reduce_scatter, merged_rs_wait]:
             if n not in result_list:
                 result_list.append(n)
     return result_list
